@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/nspcc-dev/neofs-api-go/util/proto"
-	"github.com/nspcc-dev/neofs-api-go/util/proto/test"
+	"github.com/cthulhu-rider/neofs-api-go/v2/util/proto"
+	"github.com/cthulhu-rider/neofs-api-go/v2/util/proto/test"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 	goproto "google.golang.org/protobuf/proto"
