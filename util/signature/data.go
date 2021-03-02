@@ -32,7 +32,6 @@ func DataSignature(key *ecdsa.PrivateKey, src DataSource, opts ...SignOption) ([
 	if err != nil {
 		return nil, err
 	}
-	defer bytesPool.Put(data)
 
 	cfg := defaultCfg()
 
@@ -59,7 +58,6 @@ func VerifyDataWithSource(dataSrc DataSource, sigSrc KeySignatureSource, opts ..
 	if err != nil {
 		return err
 	}
-	defer bytesPool.Put(data)
 
 	cfg := defaultCfg()
 
