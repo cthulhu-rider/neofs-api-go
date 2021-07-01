@@ -5,10 +5,9 @@ import (
 )
 
 // Generate returns random accounting.Decimal.
-func Generate() *accounting.Decimal {
-	d := accounting.NewDecimal()
-	d.SetValue(1)
-	d.SetPrecision(2)
+func Generate() (r accounting.Decimal) {
+	r.SetValue(1)
+	r.SetPrecision(2)
 
-	return d
+	return
 }
