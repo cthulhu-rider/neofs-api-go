@@ -1,210 +1,169 @@
 package eacl
 
 import (
-	"crypto/sha256"
-
-	"github.com/nspcc-dev/neofs-api-go/pkg"
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
-	"github.com/nspcc-dev/neofs-api-go/pkg/session"
+	"github.com/nspcc-dev/neofs-api-go/pkg/refs"
 	v2acl "github.com/nspcc-dev/neofs-api-go/v2/acl"
+	v2refs "github.com/nspcc-dev/neofs-api-go/v2/refs"
 )
 
-// Table is a group of EACL records for single container.
-//
-// Table is compatible with v2 acl.EACLTable message.
+// Table represents NeoFS API V2-compatible group of EACL records for single container.
 type Table struct {
-	version pkg.Version
-	cid     *cid.ID
-	token   *session.Token
-	sig     *pkg.Signature
-	records []*Record
+	withVersion bool
+	version     refs.Version
+
+	withContainer bool
+	container     cid.ID
+
+	records Records
 }
 
-// CID returns identifier of the container that should use given access control rules.
-func (t Table) CID() *cid.ID {
-	return t.cid
+// FromV2 restores Table from acl.Table message.
+func (x *Table) FromV2(tv2 v2acl.Table) {
+	{ // version
+		vv2 := tv2.GetVersion()
+
+		x.withVersion = vv2 != nil
+		if x.withVersion {
+			x.version.FromV2(*vv2)
+		}
+	}
+
+	{ // owner
+		idv2 := tv2.GetContainerID()
+
+		x.withContainer = idv2 != nil
+		if x.withContainer {
+			x.container.FromV2(*idv2)
+		}
+	}
+
+	recordsFromV2(&x.records, tv2.GetRecords())
 }
 
-// SetCID sets identifier of the container that should use given access control rules.
-func (t *Table) SetCID(cid *cid.ID) {
-	t.cid = cid
+// WriteToV2 writes Table to acl.Table message.
+//
+// Message must not be nil.
+func (x Table) WriteToV2(tv2 *v2acl.Table) {
+	{ // version
+		var vv2 *v2refs.Version
+
+		if x.withVersion {
+			vv2 = tv2.GetVersion()
+			if vv2 == nil {
+				vv2 = new(v2refs.Version)
+			}
+
+			x.version.WriteToV2(vv2)
+		}
+
+		tv2.SetVersion(vv2)
+	}
+
+	{ // container
+		var idv2 *v2refs.ContainerID
+
+		if x.withContainer {
+			idv2 = tv2.GetContainerID()
+			if idv2 == nil {
+				idv2 = new(v2refs.ContainerID)
+			}
+
+			cid.IDToV2(idv2, x.container)
+		}
+
+		tv2.SetContainerID(idv2)
+	}
+
+	{ // records
+		var rsv2 []*v2acl.Record
+
+		if ln := x.records.Len(); ln > 0 {
+			rsv2 = tv2.GetRecords()
+			if cap(rsv2) < ln {
+				rsv2 = make([]*v2acl.Record, 0, ln)
+			}
+
+			rsv2 = rsv2[:ln]
+
+			recordsToV2(rsv2, x.records)
+		}
+
+		tv2.SetRecords(rsv2)
+	}
+}
+
+// WithContainer checks if Table container was specified.
+func (x Table) WithContainer() bool {
+	return x.withContainer
+}
+
+// Container returns identifier of the container that should use given access control rules.
+//
+// Makes sense only if WithContainer returns true.
+//
+// Result mutation affects the Table.
+func (x Table) Container() cid.ID {
+	return x.container
+}
+
+// SetContainer sets identifier of the container that should use given access control rules.
+//
+// Parameter mutation affects the Table.
+func (x *Table) SetContainer(container cid.ID) {
+	x.container = container
+	x.withContainer = true
+}
+
+// WithVersion checks if Table protocol version was specified.
+func (x Table) WithVersion() bool {
+	return x.withVersion
 }
 
 // Version returns version of eACL format.
-func (t Table) Version() pkg.Version {
-	return t.version
+//
+// Makes sense only if WithVersion returns true.
+func (x Table) Version() refs.Version {
+	return x.version
 }
 
 // SetVersion sets version of eACL format.
-func (t *Table) SetVersion(version pkg.Version) {
-	t.version = version
+func (x *Table) SetVersion(version refs.Version) {
+	x.version = version
+	x.withVersion = true
 }
 
 // Records returns list of extended ACL rules.
-func (t Table) Records() []*Record {
-	return t.records
-}
-
-// AddRecord adds single eACL rule.
-func (t *Table) AddRecord(r *Record) {
-	if r != nil {
-		t.records = append(t.records, r)
-	}
-}
-
-// SessionToken returns token of the session
-// within which Table was set.
-func (t Table) SessionToken() *session.Token {
-	return t.token
-}
-
-// SetSessionToken sets token of the session
-// within which Table was set.
-func (t *Table) SetSessionToken(tok *session.Token) {
-	t.token = tok
-}
-
-// Signature returns Table signature.
-func (t Table) Signature() *pkg.Signature {
-	return t.sig
-}
-
-// SetSignature sets Table signature.
-func (t *Table) SetSignature(sig *pkg.Signature) {
-	t.sig = sig
-}
-
-// ToV2 converts Table to v2 acl.EACLTable message.
 //
-// Nil Table converts to nil.
-func (t *Table) ToV2() *v2acl.Table {
-	if t == nil {
-		return nil
-	}
-
-	v2 := new(v2acl.Table)
-
-	if t.cid != nil {
-		v2.SetContainerID(t.cid.ToV2())
-	}
-
-	if t.records != nil {
-		records := make([]*v2acl.Record, 0, len(t.records))
-		for _, record := range t.records {
-			records = append(records, record.ToV2())
-		}
-
-		v2.SetRecords(records)
-	}
-
-	v2.SetVersion(t.version.ToV2())
-
-	return v2
+// Result mutation affects the Table.
+func (x Table) Records() Records {
+	return x.records
 }
 
-// NewTable creates, initializes and returns blank Table instance.
+// SetRecords sets list of extended ACL rules.
 //
-// Defaults:
-//  - version: pkg.SDKVersion();
-//  - container ID: nil;
-//  - records: nil;
-//  - session token: nil;
-//  - signature: nil.
-func NewTable() *Table {
-	t := new(Table)
-	t.SetVersion(*pkg.SDKVersion())
-
-	return t
-}
-
-// CreateTable creates, initializes with parameters and returns Table instance.
-func CreateTable(cid cid.ID) *Table {
-	t := NewTable()
-	t.SetCID(&cid)
-
-	return t
-}
-
-// NewTableFromV2 converts v2 acl.EACLTable message to Table.
-func NewTableFromV2(table *v2acl.Table) *Table {
-	t := new(Table)
-
-	if table == nil {
-		return t
-	}
-
-	// set version
-	if v := table.GetVersion(); v != nil {
-		version := pkg.Version{}
-		version.SetMajor(v.GetMajor())
-		version.SetMinor(v.GetMinor())
-
-		t.SetVersion(version)
-	}
-
-	// set container id
-	if id := table.GetContainerID(); id != nil {
-		if t.cid == nil {
-			t.cid = new(cid.ID)
-		}
-
-		var h [sha256.Size]byte
-
-		copy(h[:], id.GetValue())
-		t.cid.SetSHA256(h)
-	}
-
-	// set eacl records
-	v2records := table.GetRecords()
-	t.records = make([]*Record, 0, len(v2records))
-
-	for i := range v2records {
-		t.records = append(t.records, NewRecordFromV2(v2records[i]))
-	}
-
-	return t
+// Parameter mutation affects the Table.
+func (x Table) SetRecords(records Records) {
+	x.records = records
 }
 
 // Marshal marshals Table into a protobuf binary form.
-//
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (t *Table) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
+func TableMarshalProto(t Table) ([]byte, error) {
+	var cv2 v2acl.Table
 
-	return t.ToV2().
-		StableMarshal(buf)
+	t.WriteToV2(&cv2)
+
+	return cv2.StableMarshal(nil)
 }
 
-// Unmarshal unmarshals protobuf binary representation of Table.
-func (t *Table) Unmarshal(data []byte) error {
-	fV2 := new(v2acl.Table)
-	if err := fV2.Unmarshal(data); err != nil {
-		return err
+// TableUnmarshalProto unmarshals protobuf binary representation of Table.
+func TableUnmarshalProto(t *Table, data []byte) error {
+	var tv2 v2acl.Table
+
+	err := tv2.Unmarshal(data)
+	if err == nil {
+		t.FromV2(tv2)
 	}
 
-	*t = *NewTableFromV2(fV2)
-
-	return nil
-}
-
-// MarshalJSON encodes Table to protobuf JSON format.
-func (t *Table) MarshalJSON() ([]byte, error) {
-	return t.ToV2().
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes Table from protobuf JSON format.
-func (t *Table) UnmarshalJSON(data []byte) error {
-	tV2 := new(v2acl.Table)
-	if err := tV2.UnmarshalJSON(data); err != nil {
-		return err
-	}
-
-	*t = *NewTableFromV2(tV2)
-
-	return nil
+	return err
 }

@@ -4,156 +4,134 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/v2/netmap"
 )
 
-// PlacementPolicy represents v2-compatible placement policy.
-type PlacementPolicy netmap.PlacementPolicy
+// PlacementPolicy represents NeoFS API V2-compatible placement policy.
+type PlacementPolicy struct {
+	containerBackupFactor uint32
 
-// NewPlacementPolicy creates and returns new PlacementPolicy instance.
+	replicas Replicas
+
+	filters Filters
+
+	selectors Selectors
+}
+
+// FromV2 restores PlacementPolicy from netmap.PlacementPolicy message.
+func (x *PlacementPolicy) FromV2(pv2 netmap.PlacementPolicy) {
+	filtersFromV2(&x.filters, pv2.GetFilters())
+	selectorsFromV2(&x.selectors, pv2.GetSelectors())
+	replicasFromV2(&x.replicas, pv2.GetReplicas())
+	x.containerBackupFactor = pv2.GetContainerBackupFactor()
+}
+
+// WriteToV2 writes PlacementPolicy to netmap.PlacementPolicy message.
 //
-// Defaults:
-//  - backupFactor: 0;
-//  - replicas nil;
-//  - selectors nil;
-//  - filters nil.
-func NewPlacementPolicy() *PlacementPolicy {
-	return NewPlacementPolicyFromV2(new(netmap.PlacementPolicy))
-}
+// Message must not be nil.
+func (x PlacementPolicy) WriteToV2(pv2 *netmap.PlacementPolicy) {
+	{ // replicas
+		var rsv2 []*netmap.Replica
 
-// NewPlacementPolicyFromV2 converts v2 PlacementPolicy to PlacementPolicy.
-//
-// Nil netmap.PlacementPolicy converts to nil.
-func NewPlacementPolicyFromV2(f *netmap.PlacementPolicy) *PlacementPolicy {
-	return (*PlacementPolicy)(f)
-}
+		if ln := x.replicas.Len(); ln > 0 {
+			rsv2 = pv2.GetReplicas()
 
-// ToV2 converts PlacementPolicy to v2 PlacementPolicy.
-//
-// Nil PlacementPolicy converts to nil.
-func (p *PlacementPolicy) ToV2() *netmap.PlacementPolicy {
-	return (*netmap.PlacementPolicy)(p)
-}
+			if cap(rsv2) < ln {
+				rsv2 = make([]*netmap.Replica, 0, ln)
+			}
 
-// Replicas returns list of object replica descriptors.
-func (p *PlacementPolicy) Replicas() []*Replica {
-	rs := (*netmap.PlacementPolicy)(p).
-		GetReplicas()
+			rsv2 = rsv2[:ln]
 
-	if rs == nil {
-		return nil
-	}
-
-	res := make([]*Replica, 0, len(rs))
-
-	for i := range rs {
-		res = append(res, NewReplicaFromV2(rs[i]))
-	}
-
-	return res
-}
-
-// SetReplicas sets list of object replica descriptors.
-func (p *PlacementPolicy) SetReplicas(rs ...*Replica) {
-	var rsV2 []*netmap.Replica
-
-	if rs != nil {
-		rsV2 = make([]*netmap.Replica, 0, len(rs))
-
-		for i := range rs {
-			rsV2 = append(rsV2, rs[i].ToV2())
+			replicasToV2(rsv2, x.replicas)
 		}
+
+		pv2.SetReplicas(rsv2)
 	}
 
-	(*netmap.PlacementPolicy)(p).
-		SetReplicas(rsV2)
+	{ // filters
+		var fsv2 []*netmap.Filter
+
+		if ln := x.filters.Len(); ln > 0 {
+			fsv2 = pv2.GetFilters()
+
+			if cap(fsv2) < ln {
+				fsv2 = make([]*netmap.Filter, 0, ln)
+			}
+
+			fsv2 = fsv2[:ln]
+
+			filtersToV2(fsv2, x.filters)
+		}
+
+		pv2.SetFilters(fsv2)
+	}
+
+	{ // selectors
+		var ssv2 []*netmap.Selector
+
+		if ln := x.selectors.Len(); ln > 0 {
+			ssv2 = pv2.GetSelectors()
+
+			if cap(ssv2) < ln {
+				ssv2 = make([]*netmap.Selector, 0, ln)
+			}
+
+			ssv2 = ssv2[:ln]
+
+			selectorsToV2(ssv2, x.selectors)
+		}
+
+		pv2.SetSelectors(ssv2)
+	}
+
+	pv2.SetContainerBackupFactor(x.containerBackupFactor)
+}
+
+// Replicas returns set of object replica descriptors.
+//
+// Result mutation affects the PlacementPolicy.
+func (x PlacementPolicy) Replicas() Replicas {
+	return x.replicas
+}
+
+// SetReplicas sets set of object replica descriptors.
+//
+// Parameter mutation affects the PlacementPolicy.
+func (x *PlacementPolicy) SetReplicas(replicas Replicas) {
+	x.replicas = replicas
 }
 
 // ContainerBackupFactor returns container backup factor.
-func (p *PlacementPolicy) ContainerBackupFactor() uint32 {
-	return (*netmap.PlacementPolicy)(p).
-		GetContainerBackupFactor()
+func (x PlacementPolicy) ContainerBackupFactor() uint32 {
+	return x.containerBackupFactor
 }
 
 // SetContainerBackupFactor sets container backup factor.
-func (p *PlacementPolicy) SetContainerBackupFactor(f uint32) {
-	(*netmap.PlacementPolicy)(p).
-		SetContainerBackupFactor(f)
+func (x *PlacementPolicy) SetContainerBackupFactor(cbf uint32) {
+	x.containerBackupFactor = cbf
 }
 
-// Selector returns set of selectors to form the container's nodes subset.
-func (p *PlacementPolicy) Selectors() []*Selector {
-	rs := (*netmap.PlacementPolicy)(p).
-		GetSelectors()
-
-	if rs == nil {
-		return nil
-	}
-
-	res := make([]*Selector, 0, len(rs))
-
-	for i := range rs {
-		res = append(res, NewSelectorFromV2(rs[i]))
-	}
-
-	return res
+// Selectors returns set of selectors to form the container's nodes subset.
+//
+// Result mutation affects the PlacementPolicy.
+func (x PlacementPolicy) Selectors() Selectors {
+	return x.selectors
 }
 
 // SetSelectors sets set of selectors to form the container's nodes subset.
-func (p *PlacementPolicy) SetSelectors(ss ...*Selector) {
-	var ssV2 []*netmap.Selector
-
-	if ss != nil {
-		ssV2 = make([]*netmap.Selector, 0, len(ss))
-
-		for i := range ss {
-			ssV2 = append(ssV2, ss[i].ToV2())
-		}
-	}
-
-	(*netmap.PlacementPolicy)(p).
-		SetSelectors(ssV2)
+//
+// Parameter mutation affects the PlacementPolicy.
+func (x *PlacementPolicy) SetSelectors(selectors Selectors) {
+	x.selectors = selectors
 }
 
-// Filters returns list of named filters to reference in selectors.
-func (p *PlacementPolicy) Filters() []*Filter {
-	return filtersFromV2(
-		(*netmap.PlacementPolicy)(p).
-			GetFilters(),
-	)
+// Filters returns set of named filters to reference in selectors.
+//
+// Filters must not be mutated after the call.
+func (x PlacementPolicy) Filters() Filters {
+	return x.filters
 }
 
 // SetFilters sets list of named filters to reference in selectors.
-func (p *PlacementPolicy) SetFilters(fs ...*Filter) {
-	(*netmap.PlacementPolicy)(p).
-		SetFilters(filtersToV2(fs))
-}
-
-// Marshal marshals PlacementPolicy into a protobuf binary form.
 //
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (p *PlacementPolicy) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
-
-	return (*netmap.PlacementPolicy)(p).
-		StableMarshal(buf)
-}
-
-// Unmarshal unmarshals protobuf binary representation of PlacementPolicy.
-func (p *PlacementPolicy) Unmarshal(data []byte) error {
-	return (*netmap.PlacementPolicy)(p).
-		Unmarshal(data)
-}
-
-// MarshalJSON encodes PlacementPolicy to protobuf JSON format.
-func (p *PlacementPolicy) MarshalJSON() ([]byte, error) {
-	return (*netmap.PlacementPolicy)(p).
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes PlacementPolicy from protobuf JSON format.
-func (p *PlacementPolicy) UnmarshalJSON(data []byte) error {
-	return (*netmap.PlacementPolicy)(p).
-		UnmarshalJSON(data)
+// Filters must not be mutated after the call.
+func (x *PlacementPolicy) SetFilters(filters Filters) {
+	x.filters = filters
 }

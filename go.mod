@@ -9,6 +9,7 @@ require (
 	github.com/nspcc-dev/hrw v1.0.9
 	github.com/nspcc-dev/neo-go v0.95.3
 	github.com/nspcc-dev/rfc6979 v0.2.0
+	github.com/nspcc-dev/tzhash v1.4.0 // indirect
 	github.com/stretchr/testify v1.6.1
 	google.golang.org/grpc v1.29.1
 	google.golang.org/protobuf v1.23.0

@@ -3,100 +3,77 @@ package cid
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
+	"encoding/hex"
+	"fmt"
 
 	"github.com/mr-tron/base58"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 )
 
-// ID represents v2-compatible container identifier.
-type ID refs.ContainerID
+// IDLength is a byte length of ID according to NeoFS V2 spec.
+const IDLength = sha256.Size
 
-// NewFromV2 wraps v2 ContainerID message to ID.
+// ID represents NeoFS API V2-compatible container identifier.
+type ID struct {
+	b []byte
+}
+
+// FromV2 reads ID from refs.ContainerID message.
+func (x *ID) FromV2(idv2 refs.ContainerID) {
+	x.b = idv2.GetValue()
+}
+
+// Bytes returns slice of ID bytes.
 //
-// Nil refs.ContainerID converts to nil.
-func NewFromV2(idV2 *refs.ContainerID) *ID {
-	return (*ID)(idV2)
+// Slice mutation affects the ID.
+func (x ID) Bytes() []byte {
+	return x.b
 }
 
-// New creates and initializes blank ID.
+// SetBytes sets ID bytes.
+func (x *ID) SetBytes(b [IDLength]byte) {
+	x.b = b[:]
+}
+
+// String implements fmt.Stringer through Hex encoding.
 //
-// Defaults:
-//  - value: nil.
-func New() *ID {
-	return NewFromV2(new(refs.ContainerID))
+// To get the canonical string MarshalText should be used.
+func (x ID) String() string {
+	// using hex encoding has better perfomance than the base58 one
+	return hex.EncodeToString(x.b)
 }
 
-// SetSHA256 sets container identifier value to SHA256 checksum.
-func (id *ID) SetSHA256(v [sha256.Size]byte) {
-	(*refs.ContainerID)(id).SetValue(v[:])
+// MarshalText implements encoding.TextMarshaler through Base58 encoding.
+// Returns canonical ID string according to NeoFS API V2 spec.
+func (x ID) MarshalText() ([]byte, error) {
+	return []byte(base58.Encode(x.b)), nil
 }
 
-// ToV2 returns the v2 container ID message.
+// UnmarshalText implements encoding.TextUnmarshaler through Base58 decoding.
 //
-// Nil ID converts to nil.
-func (id *ID) ToV2() *refs.ContainerID {
-	return (*refs.ContainerID)(id)
-}
-
-// Equal returns true if identifiers are identical.
-func (id *ID) Equal(id2 *ID) bool {
-	return bytes.Equal(
-		(*refs.ContainerID)(id).GetValue(),
-		(*refs.ContainerID)(id2).GetValue(),
-	)
-}
-
-// Parse parses string representation of ID.
-//
-// Returns error if s is not a base58 encoded
-// ID data.
-func (id *ID) Parse(s string) error {
-	data, err := base58.Decode(s)
+// Returns an error if txt is not a canonical ID string according to NeoFS API V2 spec.
+// In this case ID remains untouched.
+func (x *ID) UnmarshalText(txt []byte) error {
+	data, err := base58.Decode(string(txt))
 	if err != nil {
-		return err
-	} else if len(data) != sha256.Size {
-		return errors.New("incorrect format of the string container ID")
+		return fmt.Errorf("incorrect encoding: %w", err)
 	}
 
-	(*refs.ContainerID)(id).SetValue(data)
+	x.b = data
 
 	return nil
 }
 
-// String returns base58 string representation of ID.
-func (id *ID) String() string {
-	return base58.Encode((*refs.ContainerID)(id).GetValue())
-}
-
-// Marshal marshals ID into a protobuf binary form.
+// Equal defines a comparison relation on ID's.
 //
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (id *ID) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
-
-	return (*refs.ContainerID)(id).
-		StableMarshal(buf)
+// ID's are equal if they have the same binary representation.
+func Equal(id1, id2 ID) bool {
+	return bytes.Equal(id1.Bytes(), id2.Bytes())
 }
 
-// Unmarshal unmarshals protobuf binary representation of ID.
-func (id *ID) Unmarshal(data []byte) error {
-	return (*refs.ContainerID)(id).
-		Unmarshal(data)
-}
-
-// MarshalJSON encodes ID to protobuf JSON format.
-func (id *ID) MarshalJSON() ([]byte, error) {
-	return (*refs.ContainerID)(id).
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes ID from protobuf JSON format.
-func (id *ID) UnmarshalJSON(data []byte) error {
-	return (*refs.ContainerID)(id).
-		UnmarshalJSON(data)
+// IDToV2 writes ID to refs.ContainerID message.
+//
+// Message must not be nil.
+func IDToV2(idv2 *refs.ContainerID, id ID) {
+	idv2.SetValue(id.Bytes())
 }

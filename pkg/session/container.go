@@ -2,138 +2,138 @@ package session
 
 import (
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
+	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	"github.com/nspcc-dev/neofs-api-go/v2/session"
 )
 
-// ContainerContext represents NeoFS API v2-compatible
-// context of the container session.
-//
-// It is a wrapper over session.ContainerSessionContext
-// which allows to abstract from details of the message
-// structure.
-type ContainerContext session.ContainerSessionContext
+// ContainerContext represents NeoFS API V2-compatible context of the container session.
+type ContainerContext struct {
+	noWildcard bool
 
-// NewContainerContext creates and returns blank ContainerSessionContext.
-//
-// Defaults:
-//  - not bound to any operation;
-//  - applied to all containers.
-func NewContainerContext() *ContainerContext {
-	v2 := new(session.ContainerSessionContext)
-	v2.SetWildcard(true)
+	verb session.ContainerSessionVerb
 
-	return ContainerContextFromV2(v2)
+	withID bool
+	id     cid.ID
 }
 
-// ContainerContextFromV2 wraps session.ContainerSessionContext
-// into ContainerContext.
-func ContainerContextFromV2(v *session.ContainerSessionContext) *ContainerContext {
-	return (*ContainerContext)(v)
+// FromV2 reads ContainerContext from session.ContainerSessionContext message.
+func (x *ContainerContext) FromV2(cv2 session.ContainerSessionContext) {
+	x.noWildcard = !cv2.Wildcard()
+
+	{ // id
+		idv2 := cv2.ContainerID()
+
+		x.withID = idv2 != nil
+
+		if x.withID {
+			x.id.FromV2(*idv2)
+		}
+	}
+
+	x.verb = cv2.Verb()
 }
 
-// ToV2 converts ContainerContext to session.ContainerSessionContext
-// message structure.
-func (x *ContainerContext) ToV2() *session.ContainerSessionContext {
-	return (*session.ContainerSessionContext)(x)
+// WriteToV2 writes ContainerContext to session.ContainerSessionContext message.
+//
+// Message must not be nil.
+func (x ContainerContext) WriteToV2(cv2 *session.ContainerSessionContext) {
+	{ // id
+		var idv2 *refs.ContainerID
+
+		if x.withID {
+			idv2 = cv2.ContainerID()
+			if idv2 == nil {
+				idv2 = new(refs.ContainerID)
+			}
+
+			cid.IDToV2(idv2, x.id)
+		}
+
+		cv2.SetContainerID(idv2)
+	}
+
+	cv2.SetWildcard(!x.noWildcard)
+	cv2.SetVerb(x.verb)
+}
+
+// ApplyToAll applies ContainerContext to all containers.
+func (x *ContainerContext) ApplyToAll() {
+	x.noWildcard = false
+	x.withID = false
+}
+
+// AppliedToAll checks if ContainerContext is applied to all containers.
+func (x ContainerContext) AppliedToAll() bool {
+	return !x.noWildcard
 }
 
 // ApplyTo specifies which container the ContainerContext applies to.
+func (x *ContainerContext) ApplyTo(id cid.ID) {
+	x.noWildcard = true
+	x.withID = true
+	x.id = id
+}
+
+// WithContainer checks if container was specified.
+func (x ContainerContext) WithContainer() bool {
+	return x.withID
+}
+
+// Container returns identifier of the container to which the ContainerContext applies.
 //
-// If id is nil, ContainerContext is applied to all containers.
-func (x *ContainerContext) ApplyTo(id *cid.ID) {
-	v2 := (*session.ContainerSessionContext)(x)
-
-	v2.SetWildcard(id == nil)
-	v2.SetContainerID(id.ToV2())
+// Makes sense only if AppliedToAll returns false and WithContainer returns true.
+func (x ContainerContext) Container() cid.ID {
+	return x.id
 }
 
-// ActOnAllContainers is a helper function that conveniently
-// applies ContainerContext to all containers.
-func ApplyToAllContainers(c *ContainerContext) {
-	c.ApplyTo(nil)
-}
-
-// Container returns identifier of the container
-// to which the ContainerContext applies.
-//
-// Returns nil if ContainerContext is applied to
-// all containers.
-func (x *ContainerContext) Container() *cid.ID {
-	v2 := (*session.ContainerSessionContext)(x)
-
-	if v2.Wildcard() {
-		return nil
-	}
-
-	return cid.NewFromV2(v2.ContainerID())
-}
-
-func (x *ContainerContext) forVerb(v session.ContainerSessionVerb) {
-	(*session.ContainerSessionContext)(x).
-		SetVerb(v)
-}
-
-func (x *ContainerContext) isForVerb(v session.ContainerSessionVerb) bool {
-	return (*session.ContainerSessionContext)(x).
-		Verb() == v
-}
-
-// ForPut binds the ContainerContext to
-// PUT operation.
+// ForPut binds the ContainerContext to PUT operation.
 func (x *ContainerContext) ForPut() {
-	x.forVerb(session.ContainerVerbPut)
+	x.verb = session.ContainerVerbPut
 }
 
-// IsForPut checks if ContainerContext is bound to
-// PUT operation.
-func (x *ContainerContext) IsForPut() bool {
-	return x.isForVerb(session.ContainerVerbPut)
+// IsForPut checks if ContainerContext is bound to PUT operation.
+func (x ContainerContext) IsForPut() bool {
+	return x.verb == session.ContainerVerbPut
 }
 
-// ForDelete binds the ContainerContext to
-// DELETE operation.
+// ForDelete binds the ContainerContext to DELETE operation.
 func (x *ContainerContext) ForDelete() {
-	x.forVerb(session.ContainerVerbDelete)
+	x.verb = session.ContainerVerbDelete
 }
 
-// IsForDelete checks if ContainerContext is bound to
-// DELETE operation.
-func (x *ContainerContext) IsForDelete() bool {
-	return x.isForVerb(session.ContainerVerbDelete)
+// IsForDelete checks if ContainerContext is bound to DELETE operation.
+func (x ContainerContext) IsForDelete() bool {
+	return x.verb == session.ContainerVerbDelete
 }
 
-// ForSetEACL binds the ContainerContext to
-// SETEACL operation.
+// ForSetEACL binds the ContainerContext to SETEACL operation.
 func (x *ContainerContext) ForSetEACL() {
-	x.forVerb(session.ContainerVerbSetEACL)
+	x.verb = session.ContainerVerbSetEACL
 }
 
-// IsForSetEACL checks if ContainerContext is bound to
-// SETEACL operation.
-func (x *ContainerContext) IsForSetEACL() bool {
-	return x.isForVerb(session.ContainerVerbSetEACL)
+// IsForSetEACL checks if ContainerContext is bound to SETEACL operation.
+func (x ContainerContext) IsForSetEACL() bool {
+	return x.verb == session.ContainerVerbSetEACL
 }
 
-// Marshal marshals ContainerContext into a protobuf binary form.
-func (x *ContainerContext) Marshal(bs ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(bs) > 0 {
-		buf = bs[0]
+// ContainerContextMarshalProtoJSON encodes ContainerContext to protobuf JSON format.
+func ContainerContextMarshalProtoJSON(c ContainerContext) ([]byte, error) {
+	var cv2 session.ContainerSessionContext
+
+	c.WriteToV2(&cv2)
+
+	return cv2.MarshalJSON()
+}
+
+// ContainerContextUnmarshalProtoJSON decodes ContainerContext from protobuf JSON format.
+func ContainerContextUnmarshalProtoJSON(c *ContainerContext, data []byte) error {
+	var cv2 session.ContainerSessionContext
+
+	if err := cv2.UnmarshalJSON(data); err != nil {
+		return err
 	}
-	return x.ToV2().StableMarshal(buf)
-}
 
-// Unmarshal unmarshals protobuf binary representation of ContainerContext.
-func (x *ContainerContext) Unmarshal(data []byte) error {
-	return x.ToV2().Unmarshal(data)
-}
+	c.FromV2(cv2)
 
-// MarshalJSON encodes ContainerContext to protobuf JSON format.
-func (x *ContainerContext) MarshalJSON() ([]byte, error) {
-	return x.ToV2().MarshalJSON()
-}
-
-// UnmarshalJSON decodes ContainerContext from protobuf JSON format.
-func (x *ContainerContext) UnmarshalJSON(data []byte) error {
-	return x.ToV2().UnmarshalJSON(data)
+	return nil
 }

@@ -2,469 +2,456 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	neofsecdsa "github.com/nspcc-dev/neofs-api-go/crypto/ecdsa"
-	neofsrfc6979 "github.com/nspcc-dev/neofs-api-go/crypto/rfc6979"
-	"github.com/nspcc-dev/neofs-api-go/pkg"
-	"github.com/nspcc-dev/neofs-api-go/pkg/acl/eacl"
 	"github.com/nspcc-dev/neofs-api-go/pkg/container"
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
-	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
+	"github.com/nspcc-dev/neofs-api-go/pkg/refs"
 	"github.com/nspcc-dev/neofs-api-go/pkg/session"
 	v2container "github.com/nspcc-dev/neofs-api-go/v2/container"
-	apicrypto "github.com/nspcc-dev/neofs-api-go/v2/crypto"
-	"github.com/nspcc-dev/neofs-api-go/v2/refs"
+	v2refs "github.com/nspcc-dev/neofs-api-go/v2/refs"
 	rpcapi "github.com/nspcc-dev/neofs-api-go/v2/rpc"
-	v2signature "github.com/nspcc-dev/neofs-api-go/v2/signature"
 )
 
-// EACLWithSignature represents eACL table/signature pair.
-type EACLWithSignature struct {
-	table *eacl.Table
+// PutContainerPrm groups the parameters of Client.PutContainer operation.
+type PutContainerPrm struct {
+	commonPrmWithSession
+
+	cnrSet    bool
+	container container.Container
+
+	sigSet    bool
+	signature refs.Signature
 }
 
-// EACL returns eACL table.
-func (e EACLWithSignature) EACL() *eacl.Table {
-	return e.table
+// PutContainerRes groups the results of Client.PutContainer operation.
+type PutContainerRes struct {
+	id cid.ID
 }
 
-// Signature returns table signature.
+// PutContainer requests to store the container in NeoFS network. The container is written asynchronously, the absence
+// of errors does not guarantee that the container will be saved. You can check the appearance using read operations.
 //
-// Deprecated: use EACL().Signature() instead.
-func (e EACLWithSignature) Signature() *pkg.Signature {
-	return e.table.Signature()
-}
+// All required parameters must be set. Result must not be nil.
+//
+// Context is used for network communication. To set the timeout, use context.WithTimeout or context.WithDeadline.
+// It must not be nil.
+func (x Client) PutContainer(ctx context.Context, prm PutContainerPrm, res *PutContainerRes) error {
+	// prelim checks
+	prm.checkInputs(ctx, res)
 
-func (x Client) PutContainer(ctx context.Context, cnr *container.Container, opts ...CallOption) (*cid.ID, error) {
-	// apply all available options
-	callOptions := defaultCallOptions()
+	var reqBody v2container.PutRequestBody
 
-	for i := range opts {
-		opts[i](callOptions)
-	}
+	{ // construct the request body
+		{ // container
+			var cnrv2 v2container.Container
 
-	// set transport version
-	cnr.SetVersion(pkg.SDKVersion())
+			prm.container.WriteToV2(&cnrv2)
 
-	// if container owner is not set, then use client key as owner
-	if cnr.OwnerID() == nil {
-		w, err := owner.NEO3WalletFromECDSAPublicKey(callOptions.key.PublicKey)
-		if err != nil {
-			return nil, err
+			reqBody.SetContainer(&cnrv2)
 		}
 
-		ownerID := new(owner.ID)
-		ownerID.SetNeo3Wallet(w)
+		{ // signature
+			var sigv2 v2refs.Signature
 
-		cnr.SetOwnerID(ownerID)
+			refs.SignatureToV2(&sigv2, prm.signature)
+
+			reqBody.SetSignature(&sigv2)
+		}
 	}
 
-	reqBody := new(v2container.PutRequestBody)
-	reqBody.SetContainer(cnr.ToV2())
-
-	// sign container
 	var (
-		p   apicrypto.SignPrm
-		sig = new(refs.Signature)
+		err error
+		req v2container.PutRequest
 	)
 
-	reqBody.SetSignature(sig)
-
-	p.SetProtoMarshaler(v2signature.StableMarshalerCrypto(reqBody.GetContainer()))
-	p.SetTargetSignature(sig)
-
-	err := apicrypto.Sign(neofsrfc6979.Signer(callOptions.key), p)
-	if err != nil {
-		return nil, err
+	{ // construct the request
+		if err = prepareRequest(&req, prm, func(r requestInterface) {
+			r.(*v2container.PutRequest).SetBody(&reqBody)
+		}); err != nil {
+			return err
+		}
 	}
 
-	var req v2container.PutRequest
-	req.SetBody(reqBody)
+	var rpcRes rpcapi.PutContainerRes
 
-	meta := v2MetaHeaderFromOpts(callOptions)
-	meta.SetSessionToken(cnr.SessionToken().ToV2())
+	{ // exec RPC
+		var rpcPrm rpcapi.PutContainerPrm
 
-	req.SetMetaHeader(meta)
+		rpcPrm.SetRequest(req)
 
-	err = v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return nil, err
-	}
-
-	var prm rpcapi.PutContainerPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.PutContainerRes
-
-	err = rpcapi.PutContainer(ctx, x.c, prm, &res)
-	if err != nil {
-		return nil, err
-	}
-
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return nil, fmt.Errorf("can't verify response message: %w", err)
-	}
-
-	return cid.NewFromV2(resp.GetBody().GetContainerID()), nil
-}
-
-// GetContainer receives container structure through NeoFS API call.
-//
-// Returns error if container structure is received but does not meet NeoFS API specification.
-func (x Client) GetContainer(ctx context.Context, id *cid.ID, opts ...CallOption) (*container.Container, error) {
-	// apply all available options
-	callOptions := defaultCallOptions()
-
-	for i := range opts {
-		opts[i](callOptions)
-	}
-
-	reqBody := new(v2container.GetRequestBody)
-	reqBody.SetContainerID(id.ToV2())
-
-	var req v2container.GetRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
-
-	err := v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return nil, err
-	}
-
-	var prm rpcapi.GetContainerPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.GetContainerRes
-
-	err = rpcapi.GetContainer(ctx, x.c, prm, &res)
-	if err != nil {
-		return nil, fmt.Errorf("transport error: %w", err)
-	}
-
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return nil, fmt.Errorf("can't verify response message: %w", err)
-	}
-
-	body := resp.GetBody()
-
-	cnr := container.NewContainerFromV2(body.GetContainer())
-
-	cnr.SetSessionToken(
-		session.NewTokenFromV2(body.GetSessionToken()),
-	)
-
-	cnr.SetSignature(
-		pkg.NewSignatureFromV2(body.GetSignature()),
-	)
-
-	return cnr, nil
-}
-
-// GetVerifiedContainerStructure is a wrapper over Client.GetContainer method
-// which checks if the structure of the resulting container matches its identifier.
-//
-// Returns an error if container does not match the identifier.
-func GetVerifiedContainerStructure(ctx context.Context, c Client, id *cid.ID, opts ...CallOption) (*container.Container, error) {
-	cnr, err := c.GetContainer(ctx, id, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	if !container.CalculateID(cnr).Equal(id) {
-		return nil, errors.New("container structure does not match the identifier")
-	}
-
-	return cnr, nil
-}
-
-func (x Client) ListContainers(ctx context.Context, ownerID *owner.ID, opts ...CallOption) ([]*cid.ID, error) {
-	// apply all available options
-	callOptions := defaultCallOptions()
-
-	for i := range opts {
-		opts[i](callOptions)
-	}
-
-	if ownerID == nil {
-		w, err := owner.NEO3WalletFromECDSAPublicKey(callOptions.key.PublicKey)
+		err = rpcapi.PutContainer(ctx, x.c, rpcPrm, &rpcRes)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("rpc error: %w", err)
+		}
+	}
+
+	var (
+		resp = rpcRes.Response()
+		body *v2container.PutResponseBody
+		idv2 *v2refs.ContainerID
+	)
+
+	{ // verify the response
+		if body = resp.GetBody(); body == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
 		}
 
-		ownerID = new(owner.ID)
-		ownerID.SetNeo3Wallet(w)
+		if idv2 = body.GetContainerID(); idv2 == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
+		}
+
+		if err = verifyResponseSignature(&resp); err != nil {
+			return err
+		}
 	}
 
-	reqBody := new(v2container.ListRequestBody)
-	reqBody.SetOwnerID(ownerID.ToV2())
-
-	var req v2container.ListRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
-
-	err := v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return nil, err
+	{ // set results
+		res.id.FromV2(*idv2)
 	}
 
-	var prm rpcapi.ListContainerPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.ListContainerRes
-
-	err = rpcapi.ListContainers(ctx, x.c, prm, &res)
-	if err != nil {
-		return nil, fmt.Errorf("transport error: %w", err)
-	}
-
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return nil, fmt.Errorf("can't verify response message: %w", err)
-	}
-
-	result := make([]*cid.ID, 0, len(resp.GetBody().GetContainerIDs()))
-	for _, cidV2 := range resp.GetBody().GetContainerIDs() {
-		result = append(result, cid.NewFromV2(cidV2))
-	}
-
-	return result, nil
+	return nil
 }
 
-func (x Client) DeleteContainer(ctx context.Context, id *cid.ID, opts ...CallOption) error {
-	// apply all available options
-	callOptions := defaultCallOptions()
+// check checks if all required parameters are set and panics if not.
+func (x PutContainerPrm) checkInputs(ctx context.Context, res *PutContainerRes) {
+	x.commonPrm.checkInputs(ctx)
 
-	for i := range opts {
-		opts[i](callOptions)
+	switch {
+	case res == nil:
+		panic("nil result")
+	case !x.cnrSet:
+		panic("container is required")
+	case !x.sigSet:
+		panic("container signature is required")
+	}
+}
+
+// SetContainer sets structured information about new container.
+//
+// Required parameter.
+func (x *PutContainerPrm) SetContainer(cnr container.Container) {
+	// thought we could instead provide
+	//
+	// func (x *PutContainerPrm) AccessContainer(f func(*container.Container)) {
+	//   f(&x.container)
+	// }
+	//
+	// It would be more convenient if we want to compose the container from the pieces or from the message.
+	// With this approach current function can be implemented:
+	//
+	// func SetContainer(p *PutContainerPrm, cnr container.Container) {
+	//   p.AccessContainer(func(cnrp *container.Container) { *cnrp = cnr })
+	// }
+	x.cnrSet = true
+	x.container = cnr
+}
+
+// TODO: need a function to calculate the signature.
+
+// SetSignature sets signature of the container structure in a protobuf binary format.
+//
+// Required parameter.
+func (x *PutContainerPrm) SetSignature(sig refs.Signature) {
+	x.sigSet = true
+	x.signature = sig
+}
+
+// ID returns identifier of the processing container. It can be used to observe the appearance of a container.
+//
+// Result is free to be mutated.
+func (x PutContainerRes) ID() cid.ID {
+	return x.id
+}
+
+// GetContainerPrm groups the parameters of Client.GetContainer operation.
+type GetContainerPrm struct {
+	commonPrm
+
+	idSet bool
+	id    cid.ID
+}
+
+// GetContainerRes groups the results of Client.GetContainer operation.
+type GetContainerRes struct {
+	cnr container.Container
+
+	withToken bool
+	token     session.Token
+
+	withSignature bool
+	signature     refs.Signature
+}
+
+// GetContainer reads the container from the NeoFS network.
+//
+// All required parameters must be set. Result must not be nil.
+//
+// Context is used for network communication. To set the timeout, use context.WithTimeout or context.WithDeadline.
+// It must not be nil.
+func (x Client) GetContainer(ctx context.Context, prm GetContainerPrm, res *GetContainerRes) error {
+	// prelim checks
+	prm.checkInputs(ctx, res)
+
+	var reqBody v2container.GetRequestBody
+
+	{ // construct the request body
+		{ // container ID
+			var idv2 v2refs.ContainerID
+
+			cid.IDToV2(&idv2, prm.id)
+
+			reqBody.SetContainerID(&idv2)
+		}
 	}
 
-	reqBody := new(v2container.DeleteRequestBody)
-	reqBody.SetContainerID(id.ToV2())
-
-	// sign container ID
 	var (
-		p   apicrypto.SignPrm
-		sig = new(refs.Signature)
+		err error
+		req v2container.GetRequest
 	)
 
-	reqBody.SetSignature(sig)
-
-	p.SetProtoMarshaler(v2signature.StableMarshalerCrypto(reqBody))
-	p.SetTargetSignature(sig)
-
-	err := apicrypto.Sign(neofsrfc6979.Signer(callOptions.key), p)
-	if err != nil {
-		return err
+	{ // construct the request
+		if err = prepareRequest(&req, prm, func(r requestInterface) {
+			r.(*v2container.GetRequest).SetBody(&reqBody)
+		}); err != nil {
+			return err
+		}
 	}
 
-	var req v2container.DeleteRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
+	var rpcRes rpcapi.GetContainerRes
 
-	err = v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return err
+	{ // exec RPC
+		var rpcPrm rpcapi.GetContainerPrm
+
+		rpcPrm.SetRequest(req)
+
+		err = rpcapi.GetContainer(ctx, x.c, rpcPrm, &rpcRes)
+		if err != nil {
+			return fmt.Errorf("rpc error: %w", err)
+		}
 	}
 
-	var prm rpcapi.DeleteContainerPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.DeleteContainerRes
-
-	err = rpcapi.DeleteContainer(ctx, x.c, prm, &res)
-	if err != nil {
-		return fmt.Errorf("transport error: %w", err)
-	}
-
-	resp := res.Response()
-
-	if err := v2signature.VerifyServiceMessage(&resp); err != nil {
-		return fmt.Errorf("can't verify response message: %w", err)
-	}
-
-	return nil
-}
-
-func (x Client) GetEACL(ctx context.Context, id *cid.ID, opts ...CallOption) (*EACLWithSignature, error) {
-	// apply all available options
-	callOptions := defaultCallOptions()
-
-	for i := range opts {
-		opts[i](callOptions)
-	}
-
-	reqBody := new(v2container.GetExtendedACLRequestBody)
-	reqBody.SetContainerID(id.ToV2())
-
-	var req v2container.GetExtendedACLRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
-
-	err := v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return nil, err
-	}
-
-	var prm rpcapi.GetEACLPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.GetEACLRes
-
-	err = rpcapi.GetEACL(ctx, x.c, prm, &res)
-	if err != nil {
-		return nil, fmt.Errorf("transport error: %w", err)
-	}
-
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return nil, fmt.Errorf("can't verify response message: %w", err)
-	}
-
-	body := resp.GetBody()
-
-	table := eacl.NewTableFromV2(body.GetEACL())
-
-	table.SetSessionToken(
-		session.NewTokenFromV2(body.GetSessionToken()),
-	)
-
-	table.SetSignature(
-		pkg.NewSignatureFromV2(body.GetSignature()),
-	)
-
-	return &EACLWithSignature{
-		table: table,
-	}, nil
-}
-
-func (x Client) SetEACL(ctx context.Context, eacl *eacl.Table, opts ...CallOption) error {
-	// apply all available options
-	callOptions := defaultCallOptions()
-
-	for i := range opts {
-		opts[i](callOptions)
-	}
-
-	reqBody := new(v2container.SetExtendedACLRequestBody)
-	reqBody.SetEACL(eacl.ToV2())
-	reqBody.GetEACL().SetVersion(pkg.SDKVersion().ToV2())
-
-	// sign eACL table
 	var (
-		p   apicrypto.SignPrm
-		sig = new(refs.Signature)
+		resp = rpcRes.Response()
+		body *v2container.GetResponseBody
+		cnr  *v2container.Container
 	)
 
-	reqBody.SetSignature(sig)
+	{ // verify the response
+		body = resp.GetBody()
+		if body == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null"
+			return errMalformedResponse
+		}
 
-	p.SetProtoMarshaler(v2signature.StableMarshalerCrypto(reqBody.GetEACL()))
-	p.SetTargetSignature(sig)
+		cnr = body.GetContainer()
+		if cnr == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null"
+			return errMalformedResponse
+		}
 
-	err := apicrypto.Sign(neofsrfc6979.Signer(callOptions.key), p)
-	if err != nil {
-		return err
+		if err = verifyResponseSignature(&resp); err != nil {
+			return err
+		}
 	}
 
-	var req v2container.SetExtendedACLRequest
-	req.SetBody(reqBody)
+	{ // set results
+		{ // container
+			res.cnr.FromV2(*cnr)
+		}
 
-	meta := v2MetaHeaderFromOpts(callOptions)
-	meta.SetSessionToken(eacl.SessionToken().ToV2())
+		{ // session token
+			tokv2 := body.GetSessionToken()
 
-	req.SetMetaHeader(meta)
+			res.withToken = tokv2 != nil
+			if res.withToken {
+				res.token.FromV2(*tokv2)
+			}
+		}
 
-	err = v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return err
-	}
+		{ // signature
+			sigv2 := body.GetSignature()
 
-	var prm rpcapi.SetEACLPrm
-
-	prm.SetRequest(req)
-
-	var res rpcapi.SetEACLRes
-
-	err = rpcapi.SetEACL(ctx, x.c, prm, &res)
-	if err != nil {
-		return fmt.Errorf("transport error: %w", err)
-	}
-
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return fmt.Errorf("can't verify response message: %w", err)
+			res.withSignature = sigv2 != nil
+			if res.withSignature {
+				refs.SignatureFromV2(&res.signature, *sigv2)
+			}
+		}
 	}
 
 	return nil
 }
 
-// AnnounceContainerUsedSpace used by storage nodes to estimate their container
-// sizes during lifetime. Use it only in storage node applications.
-func (x Client) AnnounceContainerUsedSpace(
-	ctx context.Context,
-	announce []container.UsedSpaceAnnouncement,
-	opts ...CallOption) error {
-	callOptions := defaultCallOptions() // apply all available options
+// check checks if all required parameters are set and panics if not.
+func (x GetContainerPrm) checkInputs(ctx context.Context, res *GetContainerRes) {
+	x.commonPrm.checkInputs(ctx)
 
-	for i := range opts {
-		opts[i](callOptions)
+	switch {
+	case res == nil:
+		panic("nil result")
+	case !x.idSet:
+		panic("container ID is required")
+	}
+}
+
+// SetID sets identifier of the container to be read.
+//
+// Required parameter. Parameter must not be mutated before completing the operation.
+func (x *GetContainerPrm) SetID(id cid.ID) {
+	x.id = id
+	x.idSet = true
+}
+
+// Container returns structured information about requested container.
+func (x GetContainerRes) Container() container.Container {
+	return x.cnr
+}
+
+// WithSession checks whether the server returned token of the session within which the container was created.
+func (x GetContainerRes) WithSession() bool {
+	return x.withToken
+}
+
+// SessionToken returns session token.
+//
+// Makes sense only if WithSession returns true.
+func (x GetContainerRes) SessionToken() session.Token {
+	return x.token
+}
+
+// WithSignature checks whether the server returned signature of the container in a protobuf binary format.
+func (x GetContainerRes) WithSignature() bool {
+	return x.withToken
+}
+
+// TODO: need a function to verify the signature.
+
+// Signature returns signature of the container in a protobuf binary format.
+//
+// Makes sense only if WithSignature returns true.
+func (x GetContainerRes) Signature() refs.Signature {
+	return x.signature
+}
+
+// DeleteContainerPrm groups the parameters of Client.DeleteContainer operation.
+type DeleteContainerPrm struct {
+	commonPrmWithSession
+
+	idSet bool
+	id    cid.ID
+
+	sigSet    bool
+	signature refs.Signature
+}
+
+// DeleteContainerRes groups the results of Client.DeleteContainer operation.
+type DeleteContainerRes struct{}
+
+// DeleteContainer requests to remove the container from the NeoFS network. The container is removed asynchronously, the
+// absence of errors does not guarantee that the container will be removed. You can check the absence using read
+// operations.
+//
+// All required parameters must be set. Result is ignored and can be nil.
+//
+// Context is used for network communication. To set the timeout, use context.WithTimeout or context.WithDeadline.
+// It must not be nil.
+func (x Client) DeleteContainer(ctx context.Context, prm DeleteContainerPrm, res *DeleteContainerRes) error {
+	// prelim checks
+	prm.checkInputs(ctx, res)
+
+	var reqBody v2container.DeleteRequestBody
+
+	{ // construct the request body
+		{ // container ID
+			var idv2 v2refs.ContainerID
+
+			cid.IDToV2(&idv2, prm.id)
+
+			reqBody.SetContainerID(&idv2)
+		}
+
+		{ // signature
+			var sigv2 v2refs.Signature
+
+			refs.SignatureToV2(&sigv2, prm.signature)
+
+			reqBody.SetSignature(&sigv2)
+		}
 	}
 
-	// convert list of SDK announcement structures into NeoFS-API v2 list
-	v2announce := make([]*v2container.UsedSpaceAnnouncement, 0, len(announce))
-	for i := range announce {
-		v2announce = append(v2announce, announce[i].ToV2())
+	var (
+		err error
+		req v2container.DeleteRequest
+	)
+
+	{ // construct the request
+		if err = prepareRequest(&req, prm, func(r requestInterface) {
+			r.(*v2container.DeleteRequest).SetBody(&reqBody)
+		}); err != nil {
+			return err
+		}
 	}
 
-	// prepare body of the NeoFS-API v2 request and request itself
-	reqBody := new(v2container.AnnounceUsedSpaceRequestBody)
-	reqBody.SetAnnouncements(v2announce)
+	var rpcRes rpcapi.DeleteContainerRes
 
-	var req v2container.AnnounceUsedSpaceRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
+	{ // exec RPC
+		var rpcPrm rpcapi.DeleteContainerPrm
 
-	// sign the request
-	err := v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return err
+		rpcPrm.SetRequest(req)
+
+		err = rpcapi.DeleteContainer(ctx, x.c, rpcPrm, &rpcRes)
+		if err != nil {
+			return fmt.Errorf("rpc error: %w", err)
+		}
 	}
 
-	var prm rpcapi.AnnounceUsedSpacePrm
+	var resp = rpcRes.Response()
 
-	prm.SetRequest(req)
+	{ // verify the response
+		if body := resp.GetBody(); body == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
+		}
 
-	var res rpcapi.AnnounceUsedSpaceRes
-
-	err = rpcapi.AnnounceUsedSpace(ctx, x.c, prm, &res)
-	if err != nil {
-		return fmt.Errorf("transport error: %w", err)
+		if err = verifyResponseSignature(&resp); err != nil {
+			return err
+		}
 	}
 
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return fmt.Errorf("can't verify response message: %w", err)
+	{ // set results
 	}
 
 	return nil
+}
+
+// check checks if all required parameters are set and panics if not.
+func (x DeleteContainerPrm) checkInputs(ctx context.Context, _ *DeleteContainerRes) {
+	x.commonPrm.checkInputs(ctx)
+
+	switch {
+	case !x.idSet:
+		panic("container ID is required")
+	case !x.sigSet:
+		panic("container ID signature is required")
+	}
+}
+
+// SetID sets identifier of the container to be removed.
+//
+// Required parameter. Parameter must not be mutated before completing the operation.
+func (x *DeleteContainerPrm) SetID(id cid.ID) {
+	x.id = id
+	x.idSet = true
+}
+
+// TODO: need a function to calculate the signature.
+
+// SetSignature sets signature of the container ID bytes.
+//
+// Required parameter.
+func (x *DeleteContainerPrm) SetSignature(sig refs.Signature) {
+	x.sigSet = true
+	x.signature = sig
 }

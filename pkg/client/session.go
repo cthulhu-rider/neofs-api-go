@@ -2,81 +2,149 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	neofsecdsa "github.com/nspcc-dev/neofs-api-go/crypto/ecdsa"
+	neofsnetwork "github.com/nspcc-dev/neofs-api-go/pkg/network"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
-	"github.com/nspcc-dev/neofs-api-go/pkg/session"
+	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	rpcapi "github.com/nspcc-dev/neofs-api-go/v2/rpc"
 	v2session "github.com/nspcc-dev/neofs-api-go/v2/session"
-	v2signature "github.com/nspcc-dev/neofs-api-go/v2/signature"
 )
 
-// Session contains session-related methods.
-type Session interface {
-	// CreateSession creates session using provided expiration time.
-	CreateSession(context.Context, uint64, ...CallOption) (*session.Token, error)
+// CreateSessionKeyPrm groups the parameters of Client.CreateSessionKey operation.
+type CreateSessionKeyPrm struct {
+	commonPrm
+
+	ownerSet bool
+	owner    owner.ID
+
+	exp neofsnetwork.Epoch
 }
 
-var errMalformedResponseBody = errors.New("malformed response body")
+// CreateSessionKeyRes groups the results of Client.CreateSessionKey operation.
+type CreateSessionKeyRes struct {
+	pubkey []byte
 
-func (x Client) CreateSession(ctx context.Context, expiration uint64, opts ...CallOption) (*session.Token, error) {
-	// apply all available options
-	callOptions := defaultCallOptions()
+	id []byte
+}
 
-	for i := range opts {
-		opts[i](callOptions)
+// CreateSessionKey requests remote node to create private session key. The key later can be used for signing of
+// trusted transactions. To conduct a trusted transaction, you will need to attach the public key to the session token,
+// which appears in the parameters of some operations.
+//
+// All required parameters must be set. Result must not be nil.
+//
+// Context is used for network communication. To set the timeout, use context.WithTimeout or context.WithDeadline.
+// It must not be nil.
+func (x Client) CreateSessionKey(ctx context.Context, prm CreateSessionKeyPrm, res *CreateSessionKeyRes) error {
+	// prelim checks
+	prm.checkInputs(ctx, res)
+
+	var reqBody v2session.CreateRequestBody
+
+	{ // construct the request body
+		{ // owner
+			var idv2 refs.OwnerID
+
+			owner.IDToV2(&idv2, prm.owner)
+
+			reqBody.SetOwnerID(&idv2)
+		}
+
+		{ // expiration epoch
+			var expU64 uint64
+
+			prm.exp.WriteToUint64(&expU64)
+
+			reqBody.SetExpiration(expU64)
+		}
 	}
 
-	w, err := owner.NEO3WalletFromECDSAPublicKey(callOptions.key.PublicKey)
-	if err != nil {
-		return nil, err
+	var (
+		err error
+		req v2session.CreateRequest
+	)
+
+	{ // construct the request
+		if err = prepareRequest(&req, prm, func(r requestInterface) {
+			r.(*v2session.CreateRequest).SetBody(&reqBody)
+		}); err != nil {
+			return err
+		}
 	}
 
-	ownerID := new(owner.ID)
-	ownerID.SetNeo3Wallet(w)
+	var rpcRes rpcapi.CreateSessionRes
 
-	reqBody := new(v2session.CreateRequestBody)
-	reqBody.SetOwnerID(ownerID.ToV2())
-	reqBody.SetExpiration(expiration)
+	{ // exec RPC
+		var rpcPrm rpcapi.CreateSessionPrm
 
-	var req v2session.CreateRequest
-	req.SetBody(reqBody)
-	req.SetMetaHeader(v2MetaHeaderFromOpts(callOptions))
+		rpcPrm.SetRequest(req)
 
-	err = v2signature.SignServiceMessage(neofsecdsa.Signer(callOptions.key), &req)
-	if err != nil {
-		return nil, err
+		err = rpcapi.CreateSession(ctx, x.c, rpcPrm, &rpcRes)
+		if err != nil {
+			return fmt.Errorf("rpc error: %w", err)
+		}
 	}
 
-	var prm rpcapi.CreateSessionPrm
+	var (
+		resp = rpcRes.Response()
+		body *v2session.CreateResponseBody
+	)
 
-	prm.SetRequest(req)
+	{ // verify the response
+		if body = resp.GetBody(); body == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
+		}
 
-	var res rpcapi.CreateSessionRes
-
-	err = rpcapi.CreateSession(ctx, x.c, prm, &res)
-	if err != nil {
-		return nil, fmt.Errorf("transport error: %w", err)
+		if err = verifyResponseSignature(&resp); err != nil {
+			return err
+		}
 	}
 
-	resp := res.Response()
-
-	err = v2signature.VerifyServiceMessage(&resp)
-	if err != nil {
-		return nil, fmt.Errorf("can't verify response message: %w", err)
+	{ // set results
+		res.pubkey = body.GetSessionKey()
+		res.id = body.GetID()
 	}
 
-	body := resp.GetBody()
-	if body == nil {
-		return nil, errMalformedResponseBody
+	return nil
+}
+
+// check checks if all required parameters are set and panics if not.
+func (x CreateSessionKeyPrm) checkInputs(ctx context.Context, res *CreateSessionKeyRes) {
+	x.commonPrm.checkInputs(ctx)
+
+	switch {
+	case res == nil:
+		panic("nil result")
+	case !x.ownerSet:
+		panic("account ID is required")
 	}
+}
 
-	sessionToken := session.NewToken()
-	sessionToken.SetID(body.GetID())
-	sessionToken.SetSessionKey(body.GetSessionKey())
-	sessionToken.SetOwnerID(ownerID)
+// SetOwner sets account identifier to bind the session.
+//
+// Required parameter.
+func (x *CreateSessionKeyPrm) SetOwner(id owner.ID) {
+	x.ownerSet = true
+	x.owner = id
+}
 
-	return sessionToken, nil
+// SetExp sets last epoch of session key lifetime. Node should store the private session key up to the limit.
+func (x *CreateSessionKeyPrm) SetExp(exp neofsnetwork.Epoch) {
+	x.exp = exp
+}
+
+// PublicKey returns public session key in a binary format.
+//
+// Result is free to be mutated.
+func (x CreateSessionKeyRes) PublicKey() []byte {
+	return x.pubkey
+}
+
+// ID returns opened session identifier. It can be used as token ID to link the token to the session.
+//
+// Result is free to be mutated.
+func (x CreateSessionKeyRes) ID() []byte {
+	return x.id
 }

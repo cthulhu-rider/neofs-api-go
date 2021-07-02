@@ -1,179 +1,87 @@
 package eacl
 
 import (
-	"fmt"
-
 	v2acl "github.com/nspcc-dev/neofs-api-go/v2/acl"
 )
 
-// Filter defines check conditions if request header is matched or not. Matched
-// header means that request should be processed according to EACL action.
-//
-// Filter is compatible with v2 acl.EACLRecord.Filter message.
+// Filter represents NeoFS API V2-compatible entity which defines check conditions
+// if request header is matched or not.
 type Filter struct {
-	from    FilterHeaderType
-	matcher Match
-	key     filterKey
-	value   fmt.Stringer
+	hTyp HeaderType
+
+	mTyp MatchType
+
+	key, val string
 }
 
-type staticStringer string
-
-type filterKey struct {
-	typ filterKeyType
-
-	str string
+// FromV2 restores Filter from acl.HeaderFilter message.
+func (x *Filter) FromV2(fv2 v2acl.HeaderFilter) {
+	x.hTyp.fromV2(fv2.GetHeaderType())
+	x.mTyp.fromV2(fv2.GetMatchType())
+	x.key = fv2.GetKey()
+	x.val = fv2.GetValue()
 }
 
-// enumeration of reserved filter keys.
-type filterKeyType int
-
-const (
-	_ filterKeyType = iota
-	fKeyObjVersion
-	fKeyObjID
-	fKeyObjContainerID
-	fKeyObjOwnerID
-	fKeyObjCreationEpoch
-	fKeyObjPayloadLength
-	fKeyObjPayloadHash
-	fKeyObjType
-	fKeyObjHomomorphicHash
-)
-
-func (s staticStringer) String() string {
-	return string(s)
-}
-
-// Value returns filtered string value.
-func (f Filter) Value() string {
-	return f.value.String()
-}
-
-// Matcher returns filter Match type.
-func (f Filter) Matcher() Match {
-	return f.matcher
-}
-
-// Key returns key to the filtered header.
-func (f Filter) Key() string {
-	return f.key.String()
-}
-
-// From returns FilterHeaderType that defined which header will be filtered.
-func (f Filter) From() FilterHeaderType {
-	return f.from
-}
-
-// ToV2 converts Filter to v2 acl.EACLRecord.Filter message.
+// WriteToV2 writes Filter to acl.HeaderFilter message.
 //
-// Nil Filter converts to nil.
-func (f *Filter) ToV2() *v2acl.HeaderFilter {
-	if f == nil {
-		return nil
+// Message must not be nil.
+func (x Filter) WriteToV2(fv2 *v2acl.HeaderFilter) {
+	{ // header type
+		var hv2 v2acl.HeaderType
+
+		x.hTyp.writeToV2(&hv2)
+
+		fv2.SetHeaderType(hv2)
 	}
 
-	filter := new(v2acl.HeaderFilter)
-	filter.SetValue(f.value.String())
-	filter.SetKey(f.key.String())
-	filter.SetMatchType(f.matcher.ToV2())
-	filter.SetHeaderType(f.from.ToV2())
+	{ // match type
+		var mv2 v2acl.MatchType
 
-	return filter
-}
+		x.mTyp.writeToV2(&mv2)
 
-func (k filterKey) String() string {
-	switch k.typ {
-	default:
-		return k.str
-	case fKeyObjVersion:
-		return v2acl.FilterObjectVersion
-	case fKeyObjID:
-		return v2acl.FilterObjectID
-	case fKeyObjContainerID:
-		return v2acl.FilterObjectContainerID
-	case fKeyObjOwnerID:
-		return v2acl.FilterObjectOwnerID
-	case fKeyObjCreationEpoch:
-		return v2acl.FilterObjectCreationEpoch
-	case fKeyObjPayloadLength:
-		return v2acl.FilterObjectPayloadLength
-	case fKeyObjPayloadHash:
-		return v2acl.FilterObjectPayloadHash
-	case fKeyObjType:
-		return v2acl.FilterObjectType
-	case fKeyObjHomomorphicHash:
-		return v2acl.FilterObjectHomomorphicHash
-	}
-}
-
-// NewFilter creates, initializes and returns blank Filter instance.
-//
-// Defaults:
-//  - header type: HeaderTypeUnknown;
-//  - matcher: MatchUnknown;
-//  - key: "";
-//  - value: "".
-func NewFilter() *Filter {
-	return NewFilterFromV2(new(v2acl.HeaderFilter))
-}
-
-// NewFilterFromV2 converts v2 acl.EACLRecord.Filter message to Filter.
-func NewFilterFromV2(filter *v2acl.HeaderFilter) *Filter {
-	f := new(Filter)
-
-	if filter == nil {
-		return f
+		fv2.SetMatchType(mv2)
 	}
 
-	f.from = FilterHeaderTypeFromV2(filter.GetHeaderType())
-	f.matcher = MatchFromV2(filter.GetMatchType())
-	f.key.str = filter.GetKey()
-	f.value = staticStringer(filter.GetValue())
-
-	return f
+	fv2.SetKey(x.key)
+	fv2.SetValue(x.val)
 }
 
-// Marshal marshals Filter into a protobuf binary form.
-//
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (f *Filter) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
-
-	return f.ToV2().
-		StableMarshal(buf)
+// HeaderType returns type of header source.
+func (x Filter) HeaderType() HeaderType {
+	return x.hTyp
 }
 
-// Unmarshal unmarshals protobuf binary representation of Filter.
-func (f *Filter) Unmarshal(data []byte) error {
-	fV2 := new(v2acl.HeaderFilter)
-	if err := fV2.Unmarshal(data); err != nil {
-		return err
-	}
-
-	*f = *NewFilterFromV2(fV2)
-
-	return nil
+// SetHeaderType sets type of header source.
+func (x *Filter) SetHeaderType(hTyp HeaderType) {
+	x.hTyp = hTyp
 }
 
-// MarshalJSON encodes Filter to protobuf JSON format.
-func (f *Filter) MarshalJSON() ([]byte, error) {
-	return f.ToV2().
-		MarshalJSON()
+// MatchType returns match type.
+func (x Filter) MatchType() MatchType {
+	return x.mTyp
 }
 
-// UnmarshalJSON decodes Filter from protobuf JSON format.
-func (f *Filter) UnmarshalJSON(data []byte) error {
-	fV2 := new(v2acl.HeaderFilter)
-	if err := fV2.UnmarshalJSON(data); err != nil {
-		return err
-	}
+// SetMatchType sets match type.
+func (x *Filter) SetMatchType(mTyp MatchType) {
+	x.mTyp = mTyp
+}
 
-	*f = *NewFilterFromV2(fV2)
+// Key returns filtered header name.
+func (x Filter) Key() string {
+	return x.val
+}
 
-	return nil
+// SetKey returns filtered header name.
+func (x *Filter) SetKey(key string) {
+	x.key = key
+}
+
+// Value returns filtered header value.
+func (x Filter) Value() string {
+	return x.val
+}
+
+// SetValue sets filtered header value.
+func (x *Filter) SetValue(val string) {
+	x.val = val
 }

@@ -4,84 +4,149 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/v2/netmap"
 )
 
-// Replica represents v2-compatible object replica descriptor.
-type Replica netmap.Replica
+// Replica represents NeoFS API V2-compatible descriptor of object replicas.
+type Replica struct {
+	amount uint32
 
-// NewReplica creates and returns new Replica instance.
-//
-// Defaults:
-//  - count: 0;
-//  - selector: "".
-func NewReplica() *Replica {
-	return NewReplicaFromV2(new(netmap.Replica))
+	selector string
 }
 
-// NewReplicaFromV2 converts v2 Replica to Replica.
-//
-// Nil netmap.Replica converts to nil.
-func NewReplicaFromV2(f *netmap.Replica) *Replica {
-	return (*Replica)(f)
+// Amount returns number of object replicas.
+func (x Replica) Amount() uint32 {
+	return x.amount
 }
 
-// ToV2 converts Replica to v2 Replica.
-//
-// Nil Replica converts to nil.
-func (r *Replica) ToV2() *netmap.Replica {
-	return (*netmap.Replica)(r)
-}
-
-// Count returns number of object replicas.
-func (r *Replica) Count() uint32 {
-	return (*netmap.Replica)(r).
-		GetCount()
-}
-
-// SetCount sets number of object replicas.
-func (r *Replica) SetCount(c uint32) {
-	(*netmap.Replica)(r).
-		SetCount(c)
+// SetAmount sets number of object replicas.
+func (x *Replica) SetAmount(amount uint32) {
+	x.amount = amount
 }
 
 // Selector returns name of selector bucket to put replicas.
-func (r *Replica) Selector() string {
-	return (*netmap.Replica)(r).
-		GetSelector()
+func (x Replica) Selector() string {
+	return x.selector
 }
 
 // SetSelector sets name of selector bucket to put replicas.
-func (r *Replica) SetSelector(s string) {
-	(*netmap.Replica)(r).
-		SetSelector(s)
+func (x *Replica) SetSelector(selector string) {
+	x.selector = selector
 }
 
-// Marshal marshals Replica into a protobuf binary form.
+// replicaFromV2 restores Replica from netmap.Replica message.
+func replicaFromV2(r *Replica, rv2 netmap.Replica) {
+	r.SetAmount(rv2.GetCount())
+	r.SetSelector(rv2.GetSelector())
+}
+
+// replicaToV2 writes Replica to netmap.Replica message.
 //
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (r *Replica) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
+// Message must not be nil.
+func replicaToV2(rv2 *netmap.Replica, r Replica) {
+	rv2.SetCount(r.Amount())
+	rv2.SetSelector(r.Selector())
+}
+
+// Replicas represents set of Replica's.
+type Replicas struct {
+	elems []Replica
+}
+
+// Len returns number of elements in the Replicas.
+func (x Replicas) Len() int {
+	return len(x.elems)
+}
+
+// SetLen sets number of elements in the Replicas.
+// Does not modify already existing elements.
+func (x *Replicas) SetLen(num int) {
+	if cap(x.elems) < num {
+		x.elems = make([]Replica, 0, num)
 	}
 
-	return (*netmap.Replica)(r).
-		StableMarshal(buf)
+	x.elems = x.elems[:num]
 }
 
-// Unmarshal unmarshals protobuf binary representation of Replica.
-func (r *Replica) Unmarshal(data []byte) error {
-	return (*netmap.Replica)(r).
-		Unmarshal(data)
+// Iterate is a read-only iterator over all elements of the Replicas. Passes each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Replicas) Iterate(f func(Replica) bool) {
+	for i := range x.elems {
+		if f(x.elems[i]) {
+			return
+		}
+	}
 }
 
-// MarshalJSON encodes Replica to protobuf JSON format.
-func (r *Replica) MarshalJSON() ([]byte, error) {
-	return (*netmap.Replica)(r).
-		MarshalJSON()
+// IterateP is a read-write iterator over all elements of the Replicas. Passes pointer to each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Replicas) IterateP(f func(*Replica) bool) {
+	for i := range x.elems {
+		if f(&x.elems[i]) {
+			return
+		}
+	}
 }
 
-// UnmarshalJSON decodes Replica from protobuf JSON format.
-func (r *Replica) UnmarshalJSON(data []byte) error {
-	return (*netmap.Replica)(r).
-		UnmarshalJSON(data)
+// AppendReplicas appends elements to the Replicas.
+//
+// Replicas must not be nil.
+func AppendReplicas(rs *Replicas, elems ...Replica) {
+	lnNew := len(elems)
+	if lnNew == 0 {
+		return
+	}
+
+	lnPrev := rs.Len()
+
+	rs.SetLen(lnPrev + lnNew)
+
+	var indFull, indPos int
+
+	rs.IterateP(func(r *Replica) bool {
+		if indFull < lnPrev {
+			indFull++
+			return false
+		}
+
+		*r = elems[indPos]
+
+		indPos++
+
+		return false
+	})
+}
+
+// replicasFromV2 restores Replicas from netmap.Replica slice.
+//
+// All slice elements must not be nil.
+func replicasFromV2(rs *Replicas, rsv2 []*netmap.Replica) {
+	ln := len(rsv2)
+	rs.SetLen(ln)
+
+	ind := 0
+
+	rs.IterateP(func(r *Replica) bool {
+		replicaFromV2(r, *rsv2[ind])
+
+		ind++
+
+		return false
+	})
+}
+
+// replicasToV2 writes Replicas to netmap.Replica slice.
+//
+// Slice length must be at least Len(). Items can be nil.
+func replicasToV2(rsv2 []*netmap.Replica, rs Replicas) {
+	ind := 0
+
+	rs.Iterate(func(r Replica) bool {
+		if rsv2[ind] == nil {
+			rsv2[ind] = new(netmap.Replica)
+		}
+
+		replicaToV2(rsv2[ind], r)
+
+		ind++
+
+		return false
+	})
 }

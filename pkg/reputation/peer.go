@@ -2,98 +2,77 @@ package reputation
 
 import (
 	"bytes"
+	"encoding/hex"
+	"fmt"
 
 	"github.com/mr-tron/base58"
 	"github.com/nspcc-dev/neofs-api-go/v2/reputation"
 )
 
-// PeerID represents peer ID compatible with NeoFS API v2.
-type PeerID reputation.PeerID
+// IDLength is a byte length of PeerID according to NeoFS V2 spec.
+const IDLength = 33
 
-// NewPeerID creates and returns blank PeerID.
+// PeerID represents NeoFS API V2-compatible ID of the participant of the reputation system.
+type PeerID struct {
+	b []byte
+}
+
+// FromV2 reads PeerID reputation.PeerID message.
+func (x *PeerID) FromV2(idv2 reputation.PeerID) {
+	x.b = idv2.GetPublicKey()
+}
+
+// Bytes returns slice of PeerID bytes.
 //
-// Defaults:
-//  - publicKey: nil.
-func NewPeerID() *PeerID {
-	return PeerIDFromV2(new(reputation.PeerID))
+// Slice mutation affects the ID.
+func (x PeerID) Bytes() []byte {
+	return x.b
 }
 
-// PeerIDFromV2 converts NeoFS API v2 reputation.PeerID message to PeerID.
+// SetBytes sets PeerID bytes.
+func (x *PeerID) SetBytes(b [IDLength]byte) {
+	x.b = b[:]
+}
+
+// String implements fmt.Stringer through Hex encoding.
 //
-// Nil reputation.PeerID converts to nil.
-func PeerIDFromV2(id *reputation.PeerID) *PeerID {
-	return (*PeerID)(id)
+// To get the canonical string MarshalText should be used.
+func (x PeerID) String() string {
+	// using hex encoding has better perfomance than the base58 one
+	return hex.EncodeToString(x.b)
 }
 
-// SetPublicKey sets peer ID as a compressed public key.
-func (x *PeerID) SetPublicKey(v []byte) {
-	(*reputation.PeerID)(x).
-		SetPublicKey(v)
+// MarshalText implements encoding.TextMarshaler through Base58 encoding.
+// Returns canonical PeerID string according to NeoFS API V2 spec.
+func (x PeerID) MarshalText() ([]byte, error) {
+	return []byte(base58.Encode(x.b)), nil
 }
 
-// ToV2 converts PeerID to NeoFS API v2 reputation.PeerID message.
+// UnmarshalText implements encoding.TextUnmarshaler through Base58 decoding.
 //
-// Nil PeerID converts to nil.
-func (x *PeerID) ToV2() *reputation.PeerID {
-	return (*reputation.PeerID)(x)
-}
-
-// Equal returns true if identifiers are identical.
-func (x *PeerID) Equal(x2 *PeerID) bool {
-	return bytes.Equal(
-		(*reputation.PeerID)(x).GetPublicKey(),
-		(*reputation.PeerID)(x2).GetPublicKey(),
-	)
-}
-
-// Parse parses PeerID from base58 string.
-func (x *PeerID) Parse(s string) error {
-	data, err := base58.Decode(s)
+// Returns an error if d is not a canonical PeerID string according to NeoFS API V2 spec.
+// In this case ID remains untouched.
+func (x *PeerID) UnmarshalText(txt []byte) error {
+	data, err := base58.Decode(string(txt))
 	if err != nil {
-		return err
+		return fmt.Errorf("incorrect encoding: %w", err)
 	}
 
-	(*reputation.PeerID)(x).SetPublicKey(data)
+	x.b = data
 
 	return nil
 }
 
-// String returns base58 string representation of PeerID.
-func (x *PeerID) String() string {
-	return base58.Encode(
-		(*reputation.PeerID)(x).
-			GetPublicKey(),
-	)
-}
-
-// Marshal marshals PeerID into a protobuf binary form.
+// Equal defines a comparison relation on PeerID's.
 //
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (x *PeerID) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
-
-	return (*reputation.PeerID)(x).
-		StableMarshal(buf)
+// PeerID's are equal if they have the same binary representation.
+func Equal(id1, id2 PeerID) bool {
+	return bytes.Equal(id1.Bytes(), id2.Bytes())
 }
 
-// Unmarshal unmarshals protobuf binary representation of PeerID.
-func (x *PeerID) Unmarshal(data []byte) error {
-	return (*reputation.PeerID)(x).
-		Unmarshal(data)
-}
-
-// MarshalJSON encodes PeerID to protobuf JSON format.
-func (x *PeerID) MarshalJSON() ([]byte, error) {
-	return (*reputation.PeerID)(x).
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes PeerID from protobuf JSON format.
-func (x *PeerID) UnmarshalJSON(data []byte) error {
-	return (*reputation.PeerID)(x).
-		UnmarshalJSON(data)
+// PeerIDToV2 writes ID to reputation.PeerID message.
+//
+// Message must not be nil.
+func PeerIDToV2(idv2 *reputation.PeerID, id PeerID) {
+	idv2.SetPublicKey(id.Bytes())
 }

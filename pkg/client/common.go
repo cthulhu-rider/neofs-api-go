@@ -1,45 +1,130 @@
 package client
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"fmt"
 
 	neofsecdsa "github.com/nspcc-dev/neofs-api-go/crypto/ecdsa"
+	"github.com/nspcc-dev/neofs-api-go/pkg/acl/eacl"
+	"github.com/nspcc-dev/neofs-api-go/pkg/refs"
 	"github.com/nspcc-dev/neofs-api-go/pkg/session"
-	"github.com/nspcc-dev/neofs-api-go/pkg/token"
+	"github.com/nspcc-dev/neofs-api-go/v2/acl"
+	v2refs "github.com/nspcc-dev/neofs-api-go/v2/refs"
 	v2session "github.com/nspcc-dev/neofs-api-go/v2/session"
 	"github.com/nspcc-dev/neofs-api-go/v2/signature"
 )
 
-// commonPrm groups the parameters inherited by all Client operations.
-type commonPrm struct {
-	keySet bool
-	key    ecdsa.PrivateKey
-
-	withSes bool
-	sesTok  session.Token
-
-	withBrr bool
-	brrTok  token.BearerToken
+// requestMetaHeaderWriter is a common interface of parameter types.
+type requestMetaHeaderWriter interface {
+	writeToRequestMetaHeader(*v2session.RequestMetaHeader)
+	privateKey() ecdsa.PrivateKey
 }
 
 // check checks if all required parameters are set and panics if not.
-func (x commonPrm) check() {
+func (x commonPrm) checkInputs(ctx context.Context) {
 	switch {
+	case ctx == nil:
+		panic("nil context")
 	case !x.keySet:
 		panic("no private key provided")
 	}
 }
 
+// SetECDSAPrivateKey sets ecdsa.PrivateKey to sign the request(s).
+//
+// Required parameter.
+func (x *commonPrm) SetECDSAPrivateKey(key ecdsa.PrivateKey) {
+	x.keySet = true
+	x.key = key
+}
+
+// privateKey returns ecdsa.PrivateKey to sign the request(s).
+func (x commonPrm) privateKey() ecdsa.PrivateKey {
+	return x.key
+}
+
 // writeToRequestMetaHeader writes the parameters that should be reflected
 // in request to RequestMetaHeader.
-func (x commonPrm) writeToRequestMetaHeader(h *v2session.RequestMetaHeader) {
-	if x.withSes {
-		h.SetSessionToken(x.sesTok.ToV2())
-	}
+func (x commonPrm) writeToRequestMetaHeader(h *v2session.RequestMetaHeader) {}
 
-	if x.withBrr {
-		h.SetBearerToken(x.brrTok.ToV2())
+// commonPrm groups the parameters inherited by all Client operations.
+type commonPrm struct {
+	keySet bool
+	key    ecdsa.PrivateKey
+}
+
+// commonPrmWithSession groups commonPrm with session token.
+type commonPrmWithSession struct {
+	commonPrm
+
+	withSes bool
+	sesTok  session.Token
+}
+
+// SetSessionToken sets token of the session within which the operation should be carried out.
+//
+// Token should be signed by its owner.
+func (x *commonPrmWithSession) SetSessionToken(sesTok session.Token) {
+	x.withSes = true
+	x.sesTok = sesTok
+}
+
+// writeToRequestMetaHeader writes the parameters that should be reflected
+// in request to RequestMetaHeader.
+func (x commonPrmWithSession) writeToRequestMetaHeader(h *v2session.RequestMetaHeader) {
+	x.commonPrm.writeToRequestMetaHeader(h)
+
+	{ // session token
+		var tv2 *v2session.SessionToken
+
+		if x.withSes {
+			tv2 = h.GetSessionToken()
+			if tv2 == nil {
+				tv2 = new(v2session.SessionToken)
+			}
+
+			x.sesTok.WriteToV2(tv2)
+		}
+
+		h.SetSessionToken(tv2)
+	}
+}
+
+// commonPrmWithTokens groups commonPrmWithSession with bearer token.
+type commonPrmWithTokens struct {
+	commonPrmWithSession
+
+	withBrr bool
+	brrTok  eacl.BearerToken
+}
+
+// SetBearerToken sets bearer token that will be attached to all requests within the operation.
+//
+// Token should be signed by its owner.
+func (x *commonPrmWithTokens) SetBearerToken(sesTok session.Token) {
+	x.withBrr = true
+	x.sesTok = sesTok
+}
+
+// writeToRequestMetaHeader writes the parameters that should be reflected
+// in request to RequestMetaHeader.
+func (x commonPrmWithTokens) writeToRequestMetaHeader(h *v2session.RequestMetaHeader) {
+	x.commonPrmWithSession.writeToRequestMetaHeader(h)
+
+	{ // bearer token
+		var tv2 *acl.BearerToken
+
+		if x.withBrr {
+			tv2 = h.GetBearerToken()
+			if tv2 == nil {
+				tv2 = new(acl.BearerToken)
+			}
+
+			x.brrTok.WriteToV2(tv2)
+		}
+
+		h.SetBearerToken(tv2)
 	}
 }
 
@@ -51,18 +136,26 @@ type requestInterface interface {
 }
 
 // prepareRequest forms meta header, sets body using callback and signs the request with private key.
-func (x commonPrm) prepareRequest(r requestInterface, bodyCallback func(requestInterface)) error {
+func prepareRequest(r requestInterface, wMeta requestMetaHeaderWriter, bodyCallback func(requestInterface)) error {
 	// construct the request meta header
 	var hMeta v2session.RequestMetaHeader
 
-	x.writeToRequestMetaHeader(&hMeta)
+	var vv2 v2refs.Version
+
+	refs.CurrentVersion().WriteToV2(&vv2)
+
+	wMeta.writeToRequestMetaHeader(&hMeta)
+	hMeta.SetVersion(&vv2)
+	hMeta.SetTTL(2)
 
 	bodyCallback(r)
 
 	r.SetMetaHeader(&hMeta)
 
+	key := wMeta.privateKey()
+
 	// arg interface is copy-pasted from signature pkg, may it is worth to share
-	err := signature.SignServiceMessage(neofsecdsa.Signer(&x.key), r)
+	err := signature.SignServiceMessage(neofsecdsa.Signer(key), r)
 	if err != nil {
 		return fmt.Errorf("could not sign the request: %w", err)
 	}
@@ -81,28 +174,4 @@ func verifyResponseSignature(r interface {
 	}
 
 	return err
-}
-
-// SetECDSAPrivateKey sets ecdsa.PrivateKey to sign the request(s).
-//
-// Required parameter.
-func (x *commonPrm) SetECDSAPrivateKey(key ecdsa.PrivateKey) {
-	x.keySet = true
-	x.key = key
-}
-
-// SetSessionToken sets token of the session within which the operation should be carried out.
-//
-// Token should be signed by its owner.
-func (x *commonPrm) SetSessionToken(sesTok session.Token) {
-	x.withSes = true
-	x.sesTok = sesTok
-}
-
-// SetBearerToken sets bearer token that will be attached to all requests within the operation.
-//
-// Token should be signed by its owner.
-func (x *commonPrm) SetBearerToken(sesTok session.Token) {
-	x.withBrr = true
-	x.sesTok = sesTok
 }

@@ -1,26 +1,23 @@
 package cidtest
 
 import (
-	"crypto/sha256"
 	"math/rand"
 
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
 )
 
-// Generate returns random cid.ID.
-func Generate() *cid.ID {
-	checksum := [sha256.Size]byte{}
+// ID returns random cid.ID.
+func ID() cid.ID {
+	var b [cid.IDLength]byte
 
-	rand.Read(checksum[:])
+	rand.Read(b[:])
 
-	return GenerateWithChecksum(checksum)
+	return IDFromBytes(b)
 }
 
-// GenerateWithChecksum returns cid.ID initialized
-// with specified checksum.
-func GenerateWithChecksum(cs [sha256.Size]byte) *cid.ID {
-	id := cid.New()
-	id.SetSHA256(cs)
-
+// IDFromBytes returns cid.ID initialized
+// with specified bytes.
+func IDFromBytes(b [cid.IDLength]byte) (id cid.ID) {
+	id.SetBytes(b)
 	return id
 }

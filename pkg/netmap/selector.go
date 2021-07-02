@@ -1,275 +1,201 @@
 package netmap
 
 import (
-	"fmt"
-	"sort"
-
-	"github.com/nspcc-dev/hrw"
 	"github.com/nspcc-dev/neofs-api-go/v2/netmap"
 )
 
-// Selector represents v2-compatible netmap selector.
-type Selector netmap.Selector
+// Selector represents NeoFS API V2-compatible netmap selector.
+type Selector struct {
+	amount uint32
 
-// processSelectors processes selectors and returns error is any of them is invalid.
-func (c *Context) processSelectors(p *PlacementPolicy) error {
-	for _, s := range p.Selectors() {
-		if s == nil {
-			return fmt.Errorf("%w: SELECT", ErrMissingField)
-		} else if s.Filter() != MainFilterName {
-			_, ok := c.Filters[s.Filter()]
-			if !ok {
-				return fmt.Errorf("%w: SELECT FROM '%s'", ErrFilterNotFound, s.Filter())
-			}
-		}
+	clause Clause
 
-		c.Selectors[s.Name()] = s
+	name string
 
-		result, err := c.getSelection(p, s)
-		if err != nil {
-			return err
-		}
+	attribute string
 
-		c.Selections[s.Name()] = result
-	}
-
-	return nil
+	filter string
 }
 
-// GetNodesCount returns amount of buckets and minimum number of nodes in every bucket
-// for the given selector.
-func GetNodesCount(_ *PlacementPolicy, s *Selector) (int, int) {
-	switch s.Clause() {
-	case ClauseSame:
-		return 1, int(s.Count())
-	default:
-		return int(s.Count()), 1
-	}
+// fromV2 reads Selector from netmap.Selector message.
+func (x *Selector) fromV2(sv2 netmap.Selector) {
+	x.amount = sv2.GetCount()
+	x.clause.fromV2(sv2.GetClause())
+	x.name = sv2.GetName()
+	x.attribute = sv2.GetAttribute()
+	x.filter = sv2.GetFilter()
 }
 
-// getSelection returns nodes grouped by s.attribute.
-// Last argument specifies if more buckets can be used to fullfill CBF.
-func (c *Context) getSelection(p *PlacementPolicy, s *Selector) ([]Nodes, error) {
-	bucketCount, nodesInBucket := GetNodesCount(p, s)
-	buckets := c.getSelectionBase(s)
-
-	if len(buckets) < bucketCount {
-		return nil, fmt.Errorf("%w: '%s'", ErrNotEnoughNodes, s.Name())
-	}
-
-	if len(c.pivot) == 0 {
-		// Deterministic order in case of zero seed.
-		if s.Attribute() == "" {
-			sort.Slice(buckets, func(i, j int) bool {
-				return buckets[i].nodes[0].ID < buckets[j].nodes[0].ID
-			})
-		} else {
-			sort.Slice(buckets, func(i, j int) bool {
-				return buckets[i].attr < buckets[j].attr
-			})
-		}
-	}
-
-	maxNodesInBucket := nodesInBucket * int(c.cbf)
-	nodes := make([]Nodes, 0, len(buckets))
-	fallback := make([]Nodes, 0, len(buckets))
-
-	for i := range buckets {
-		ns := buckets[i].nodes
-		if len(ns) >= maxNodesInBucket {
-			nodes = append(nodes, ns[:maxNodesInBucket])
-		} else if len(ns) >= nodesInBucket {
-			fallback = append(fallback, ns)
-		}
-	}
-
-	if len(nodes) < bucketCount {
-		// Fallback to using minimum allowed backup factor (1).
-		nodes = append(nodes, fallback...)
-		if len(nodes) < bucketCount {
-			return nil, fmt.Errorf("%w: '%s'", ErrNotEnoughNodes, s.Name())
-		}
-	}
-
-	if len(c.pivot) != 0 {
-		weights := make([]float64, len(nodes))
-		for i := range nodes {
-			weights[i] = GetBucketWeight(nodes[i], c.aggregator(), c.weightFunc)
-		}
-
-		hrw.SortSliceByWeightIndex(nodes, weights, c.pivotHash)
-	}
-
-	if s.Attribute() == "" {
-		nodes, fallback = nodes[:bucketCount], nodes[bucketCount:]
-		for i := range fallback {
-			index := i % bucketCount
-			if len(nodes[index]) >= maxNodesInBucket {
-				break
-			}
-			nodes[index] = append(nodes[index], fallback[i]...)
-		}
-	}
-
-	return nodes[:bucketCount], nil
-}
-
-type nodeAttrPair struct {
-	attr  string
-	nodes Nodes
-}
-
-// getSelectionBase returns nodes grouped by selector attribute.
-// It it guaranteed that each pair will contain at least one node.
-func (c *Context) getSelectionBase(s *Selector) []nodeAttrPair {
-	f := c.Filters[s.Filter()]
-	isMain := s.Filter() == MainFilterName
-	result := []nodeAttrPair{}
-	nodeMap := map[string]Nodes{}
-	attr := s.Attribute()
-
-	for i := range c.Netmap.Nodes {
-		if isMain || c.match(f, c.Netmap.Nodes[i]) {
-			if attr == "" {
-				// Default attribute is transparent identifier which is different for every node.
-				result = append(result, nodeAttrPair{attr: "", nodes: Nodes{c.Netmap.Nodes[i]}})
-			} else {
-				v := c.Netmap.Nodes[i].Attribute(attr)
-				nodeMap[v] = append(nodeMap[v], c.Netmap.Nodes[i])
-			}
-		}
-	}
-
-	if attr != "" {
-		for k, ns := range nodeMap {
-			result = append(result, nodeAttrPair{attr: k, nodes: ns})
-		}
-	}
-
-	if len(c.pivot) != 0 {
-		for i := range result {
-			hrw.SortSliceByWeightValue(result[i].nodes, result[i].nodes.Weights(c.weightFunc), c.pivotHash)
-		}
-	}
-
-	return result
-}
-
-// NewSelector creates and returns new Selector instance.
+// writeToV2 writes Selector to netmap.Selector message.
 //
-// Defaults:
-//  - name: "";
-//  - attribute: "";
-//  - filter: "";
-//  - clause: ClauseUnspecified;
-//  - count: 0.
-func NewSelector() *Selector {
-	return NewSelectorFromV2(new(netmap.Selector))
+// Message must not be nil.
+func (x Selector) writeToV2(sv2 *netmap.Selector) {
+	{ // clause
+		var cv2 netmap.Clause
+
+		x.clause.writeToV2(&cv2)
+
+		sv2.SetClause(cv2)
+	}
+
+	sv2.SetName(x.name)
+	sv2.SetAttribute(x.attribute)
+	sv2.SetFilter(x.filter)
+	sv2.SetCount(x.amount)
 }
 
-// NewSelectorFromV2 converts v2 Selector to Selector.
-//
-// Nil netmap.Selector converts to nil.
-func NewSelectorFromV2(f *netmap.Selector) *Selector {
-	return (*Selector)(f)
+// Amount returns number of nodes to select from bucket.
+func (x Selector) Amount() uint32 {
+	return x.amount
 }
 
-// ToV2 converts Selector to v2 Selector.
-//
-// Nil Selector converts to nil.
-func (s *Selector) ToV2() *netmap.Selector {
-	return (*netmap.Selector)(s)
+// SetAmount sets number of nodes to select from bucket.
+func (x *Selector) SetAmount(amount uint32) {
+	x.amount = amount
 }
 
 // Name returns selector name.
-func (s *Selector) Name() string {
-	return (*netmap.Selector)(s).
-		GetName()
+func (x Selector) Name() string {
+	return x.name
 }
 
 // SetName sets selector name.
-func (s *Selector) SetName(name string) {
-	(*netmap.Selector)(s).
-		SetName(name)
-}
-
-// Count returns count of nodes to select from bucket.
-func (s *Selector) Count() uint32 {
-	return (*netmap.Selector)(s).
-		GetCount()
-}
-
-// SetCount sets count of nodes to select from bucket.
-func (s *Selector) SetCount(c uint32) {
-	(*netmap.Selector)(s).
-		SetCount(c)
+func (x *Selector) SetName(name string) {
+	x.name = name
 }
 
 // Clause returns modifier showing how to form a bucket.
-func (s *Selector) Clause() Clause {
-	return ClauseFromV2(
-		(*netmap.Selector)(s).
-			GetClause(),
-	)
+func (x Selector) Clause() Clause {
+	return x.clause
 }
 
 // SetClause sets modifier showing how to form a bucket.
-func (s *Selector) SetClause(c Clause) {
-	(*netmap.Selector)(s).
-		SetClause(c.ToV2())
+func (x *Selector) SetClause(clause Clause) {
+	x.clause = clause
 }
 
 // Attribute returns attribute bucket to select from.
-func (s *Selector) Attribute() string {
-	return (*netmap.Selector)(s).
-		GetAttribute()
+func (x Selector) Attribute() string {
+	return x.attribute
 }
 
 // SetAttribute sets attribute bucket to select from.
-func (s *Selector) SetAttribute(a string) {
-	(*netmap.Selector)(s).
-		SetAttribute(a)
+func (x *Selector) SetAttribute(attribute string) {
+	x.attribute = attribute
 }
 
 // Filter returns filter reference to select from.
-func (s *Selector) Filter() string {
-	return (*netmap.Selector)(s).
-		GetFilter()
+func (x Selector) Filter() string {
+	return x.filter
 }
 
 // SetFilter sets filter reference to select from.
-func (s *Selector) SetFilter(f string) {
-	(*netmap.Selector)(s).
-		SetFilter(f)
+func (x *Selector) SetFilter(filter string) {
+	x.filter = filter
 }
 
-// Marshal marshals Selector into a protobuf binary form.
-//
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (s *Selector) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
+// Selectors represents set of Selector's.
+type Selectors struct {
+	elems []Selector
+}
+
+// Len returns number of elements in the Selectors.
+func (x Selectors) Len() int {
+	return len(x.elems)
+}
+
+// SetLen sets number of elements in the Selectors.
+// Does not modify already existing elements.
+func (x *Selectors) SetLen(num int) {
+	if cap(x.elems) < num {
+		x.elems = make([]Selector, 0, num)
 	}
 
-	return (*netmap.Selector)(s).StableMarshal(buf)
+	x.elems = x.elems[:num]
 }
 
-// Unmarshal unmarshals protobuf binary representation of Selector.
-func (s *Selector) Unmarshal(data []byte) error {
-	return (*netmap.Selector)(s).
-		Unmarshal(data)
+// Iterate is a read-only iterator over all elements of the Selectors. Passes each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Selectors) Iterate(f func(Selector) bool) {
+	for i := range x.elems {
+		if f(x.elems[i]) {
+			return
+		}
+	}
 }
 
-// MarshalJSON encodes Selector to protobuf JSON format.
-func (s *Selector) MarshalJSON() ([]byte, error) {
-	return (*netmap.Selector)(s).
-		MarshalJSON()
+// IterateP is a read-write iterator over all elements of the Selectors. Passes pointer to each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Selectors) IterateP(f func(*Selector) bool) {
+	for i := range x.elems {
+		if f(&x.elems[i]) {
+			return
+		}
+	}
 }
 
-// UnmarshalJSON decodes Selector from protobuf JSON format.
-func (s *Selector) UnmarshalJSON(data []byte) error {
-	return (*netmap.Selector)(s).
-		UnmarshalJSON(data)
+// AppendSelectors appends elements to the Selectors.
+//
+// Selectors must not be nil.
+func AppendSelectors(ss *Selectors, elems ...Selector) {
+	lnNew := len(elems)
+	if lnNew == 0 {
+		return
+	}
+
+	lnPrev := ss.Len()
+
+	ss.SetLen(lnPrev + lnNew)
+
+	var indFull, indPos int
+
+	ss.IterateP(func(s *Selector) bool {
+		if indFull < lnPrev {
+			indFull++
+			return false
+		}
+
+		*s = elems[indPos]
+
+		indPos++
+
+		return false
+	})
+}
+
+// selectorsFromV2 restores Selectors from netmap.Selector slice.
+//
+// All slice elements must not be nil.
+func selectorsFromV2(ss *Selectors, ssv2 []*netmap.Selector) {
+	ln := len(ssv2)
+	ss.SetLen(ln)
+
+	ind := 0
+
+	ss.IterateP(func(s *Selector) bool {
+		s.fromV2(*ssv2[ind])
+
+		ind++
+
+		return false
+	})
+}
+
+// selectorsToV2 writes Selectors to netmap.Selector slice.
+//
+// Slice length must be at least Len(). Items can be nil.
+func selectorsToV2(ssv2 []*netmap.Selector, ss Selectors) {
+	ind := 0
+
+	ss.Iterate(func(s Selector) bool {
+		if ssv2[ind] == nil {
+			ssv2[ind] = new(netmap.Selector)
+		}
+
+		s.writeToV2(ssv2[ind])
+
+		ind++
+
+		return false
+	})
 }

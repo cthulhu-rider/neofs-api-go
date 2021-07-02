@@ -1,116 +1,171 @@
 package netmap
 
 import (
+	"fmt"
+
 	"github.com/nspcc-dev/neofs-api-go/v2/netmap"
 )
 
-// Operation is an enumeration of v2-compatible filtering operations.
-type Operation uint32
+// Operation represents NeoFS API V2-compatible filtering operations.
+type Operation struct {
+	o netmap.Operation
+}
 
-const (
-	_ Operation = iota
+// fromV2 restores Operation from netmap.Operation enum value.
+func (x *Operation) fromV2(opv2 netmap.Operation) {
+	x.o = opv2
+}
 
-	// OpEQ is an "Equal" operation.
-	OpEQ
+// writeToV2 writes Operation to netmap.Operation enum value.
+//
+// Enum value must not be nil.
+func (x Operation) writeToV2(opv2 *netmap.Operation) {
+	*opv2 = x.o
+}
 
-	// OpNE is a "Not equal" operation.
-	OpNE
-
-	// OpGT is a "Greater than" operation.
-	OpGT
-
-	// OpGE is a "Greater than or equal to" operation.
-	OpGE
-
-	// OpLT is a "Less than" operation.
-	OpLT
-
-	// OpLE is a "Less than or equal to" operation.
-	OpLE
-
-	// OpOR is an "OR" operation.
-	OpOR
-
-	// OpAND is an "AND" operation.
-	OpAND
-)
-
-// OperationFromV2 converts v2 Operation to Operation.
-func OperationFromV2(op netmap.Operation) Operation {
-	switch op {
+// String implements fmt.Stringer.
+//
+// To get the canonical string MarshalText should be used.
+func (x Operation) String() string {
+	switch x.o {
 	default:
-		return 0
+		return "UNDEFINED"
+	case netmap.UnspecifiedOperation:
+		return "UNSPECIFIED"
 	case netmap.OR:
-		return OpOR
+		return "OR"
 	case netmap.AND:
-		return OpAND
+		return "AND"
 	case netmap.GE:
-		return OpGE
+		return "GE"
 	case netmap.GT:
-		return OpGT
+		return "GT"
 	case netmap.LE:
-		return OpLE
+		return "LE"
 	case netmap.LT:
-		return OpLT
+		return "LT"
 	case netmap.EQ:
-		return OpEQ
+		return "EQ"
 	case netmap.NE:
-		return OpNE
+		return "NE"
 	}
 }
 
-// ToV2 converts Operation to v2 Operation.
-func (op Operation) ToV2() netmap.Operation {
-	switch op {
+// MarshalText implements encoding.TextMarshaler.
+// Returns canonical Operation string according to NeoFS API V2 spec.
+//
+// Returns an error if Operation is not supported.
+func (x Operation) MarshalText() ([]byte, error) {
+	switch x.o {
 	default:
-		return netmap.UnspecifiedOperation
-	case OpOR:
-		return netmap.OR
-	case OpAND:
-		return netmap.AND
-	case OpGE:
-		return netmap.GE
-	case OpGT:
-		return netmap.GT
-	case OpLE:
-		return netmap.LE
-	case OpLT:
-		return netmap.LT
-	case OpEQ:
-		return netmap.EQ
-	case OpNE:
-		return netmap.NE
+		return nil, fmt.Errorf("unsupported Operation: %d", x.o)
+	case
+		netmap.UnspecifiedOperation,
+		netmap.OR,
+		netmap.AND,
+		netmap.GE,
+		netmap.GT,
+		netmap.LE,
+		netmap.LT,
+		netmap.EQ,
+		netmap.NE:
+		return []byte(x.o.String()), nil
 	}
 }
 
-// String returns string representation of Operation.
+// UnmarshalText implements encoding.TextUnmarshaler.
 //
-// String mapping:
-//  * OpNE: NE;
-//  * OpEQ: EQ;
-//  * OpLT: LT;
-//  * OpLE: LE;
-//  * OpGT: GT;
-//  * OpGE: GE;
-//  * OpAND: AND;
-//  * OpOR: OR;
-//  * default: OPERATION_UNSPECIFIED.
-func (op Operation) String() string {
-	return op.ToV2().String()
-}
-
-// FromString parses Operation from a string representation.
-// It is a reverse action to String().
-//
-// Returns true if s was parsed successfully.
-func (op *Operation) FromString(s string) bool {
-	var g netmap.Operation
-
-	ok := g.FromString(s)
-
-	if ok {
-		*op = OperationFromV2(g)
+// Returns an error if d is not a canonical Operation string according to NeoFS API V2 spec
+// or if the value is not supported. In these cases Operation remains untouched.
+func (x *Operation) UnmarshalText(txt []byte) error {
+	if ok := x.o.FromString(string(txt)); !ok {
+		return fmt.Errorf("unsupported operation text: %s", txt)
 	}
 
-	return ok
+	return nil
+}
+
+// Unspecified checks if Operation is not specified.
+func (x Operation) Unspecified() bool {
+	return x.o == netmap.UnspecifiedOperation
+}
+
+// EQ checks if Operation is set string "Equal".
+func (x Operation) EQ() bool {
+	return x.o == netmap.EQ
+}
+
+// SetEQ sets Operation to string "Equal".
+func (x *Operation) SetEQ() {
+	x.o = netmap.EQ
+}
+
+// NE checks if Operation is set to string "Not equal".
+func (x Operation) NE() bool {
+	return x.o == netmap.NE
+}
+
+// SetNE sets Operation to string "Not equal".
+func (x *Operation) SetNE() {
+	x.o = netmap.NE
+}
+
+// GT checks if Operation is set to numerical "Greater than".
+func (x Operation) GT() bool {
+	return x.o == netmap.GT
+}
+
+// SetGT sets Operation to numerical "Greater than".
+func (x *Operation) SetGT() {
+	x.o = netmap.GT
+}
+
+// GE checks if Operation is set to numerical "Greater than or equal to".
+func (x Operation) GE() bool {
+	return x.o == netmap.GE
+}
+
+// SetGE sets Operation to numerical "Greater than or equal to".
+func (x *Operation) SetGE() {
+	x.o = netmap.GE
+}
+
+// LT checks if Operation is set to numerical "Less than".
+func (x Operation) LT() bool {
+	return x.o == netmap.LT
+}
+
+// SetLT sets Operation to numerical "Less than".
+func (x *Operation) SetLT() {
+	x.o = netmap.LT
+}
+
+// LE checks if Operation is set to numerical "Less than or equal to".
+func (x Operation) LE() bool {
+	return x.o == netmap.LE
+}
+
+// SetLE sets Operation to numerical "Less than or equal to".
+func (x *Operation) SetLE() {
+	x.o = netmap.LE
+}
+
+// OR checks if Operation is set to logical "OR".
+func (x Operation) OR() bool {
+	return x.o == netmap.OR
+}
+
+// SetOR sets Operation to logical "OR".
+func (x *Operation) SetOR() {
+	x.o = netmap.OR
+}
+
+// AND checks if Operation is set to logical "AND".
+func (x Operation) AND() bool {
+	return x.o == netmap.AND
+}
+
+// SetAND sets Operation to logical "AND".
+func (x *Operation) SetAND() {
+	x.o = netmap.AND
 }

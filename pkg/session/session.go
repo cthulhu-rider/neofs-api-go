@@ -2,285 +2,483 @@ package session
 
 import (
 	"crypto/ecdsa"
+	"errors"
 
+	"github.com/google/uuid"
 	cryptoalgo "github.com/nspcc-dev/neofs-api-go/crypto/algo"
 	neofsecdsa "github.com/nspcc-dev/neofs-api-go/crypto/ecdsa"
-	"github.com/nspcc-dev/neofs-api-go/pkg"
+	neofsnetwork "github.com/nspcc-dev/neofs-api-go/pkg/network"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
 	apicrypto "github.com/nspcc-dev/neofs-api-go/v2/crypto"
 	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	"github.com/nspcc-dev/neofs-api-go/v2/session"
-	v2signature "github.com/nspcc-dev/neofs-api-go/v2/signature"
+	"github.com/nspcc-dev/neofs-api-go/v2/signature"
 )
 
-// Token represents NeoFS API v2-compatible
-// session token.
-type Token session.SessionToken
+// Token represents NeoFS API V2-compatible session token.
+type Token struct {
+	withBody bool
 
-// NewTokenFromV2 wraps session.SessionToken message structure
-// into Token.
-//
-// Nil session.SessionToken converts to nil.
-func NewTokenFromV2(tV2 *session.SessionToken) *Token {
-	return (*Token)(tV2)
+	withLifetime  bool
+	exp, iat, nbf neofsnetwork.Epoch
+
+	withOwner bool
+	owner     owner.ID
+
+	ctxType uint8
+
+	withCtxContainer bool
+	ctxContainer     ContainerContext
+
+	withCtxObject bool
+	ctxObject     ObjectContext
+
+	sessionKey []byte
+
+	id []byte
+
+	withSignature bool
+	signature     refs.Signature
 }
 
-// NewToken creates and returns blank Token.
-//
-// Defaults:
-//  - body: nil;
-//  - id: nil;
-//  - ownerId: nil;
-//  - sessionKey: nil;
-//  - exp: 0;
-//  - iat: 0;
-//  - nbf: 0;
-func NewToken() *Token {
-	return NewTokenFromV2(new(session.SessionToken))
-}
+const (
+	_ uint8 = iota
+	ctxContainer
+	ctxObject
+)
 
-// ToV2 converts Token to session.SessionToken message structure.
-//
-// Nil Token converts to nil.
-func (t *Token) ToV2() *session.SessionToken {
-	return (*session.SessionToken)(t)
-}
+// FromV2 reads Token from session.SessionToken message.
+func (x *Token) FromV2(tv2 session.SessionToken) {
+	{ // signature
+		sv2 := tv2.GetSignature()
 
-func (t *Token) setBodyField(setter func(*session.SessionTokenBody)) {
-	token := (*session.SessionToken)(t)
-	body := token.GetBody()
-
-	if body == nil {
-		body = new(session.SessionTokenBody)
-		token.SetBody(body)
+		x.withSignature = sv2 != nil
+		if x.withSignature {
+			x.signature = *sv2
+		}
 	}
 
-	setter(body)
+	body := tv2.GetBody()
+
+	x.withBody = body != nil
+
+	if !x.withBody {
+		return
+	}
+
+	{ // owner
+		idv2 := body.GetOwnerID()
+
+		x.withOwner = idv2 != nil
+		if x.withOwner {
+			x.owner.FromV2(*idv2)
+		}
+	}
+
+	{ // context
+		switch v := body.GetContext().(type) {
+		default:
+			x.ctxType = 0
+		case *session.ContainerSessionContext:
+			x.ctxType = ctxContainer
+
+			x.withCtxContainer = v != nil
+			if x.withCtxContainer {
+				x.ctxContainer.FromV2(*v)
+			}
+		case *session.ObjectSessionContext:
+			x.ctxType = ctxObject
+
+			x.withCtxObject = v != nil
+			if x.withCtxObject {
+				x.ctxObject.FromV2(*v)
+			}
+		}
+	}
+
+	{ // lifetime
+		lt := body.GetLifetime()
+
+		x.withLifetime = lt != nil
+		if x.withLifetime {
+			x.iat.FromUint64(lt.GetIat())
+			x.exp.FromUint64(lt.GetExp())
+			x.nbf.FromUint64(lt.GetNbf())
+		}
+	}
+
+	x.id = body.GetID()
+	x.sessionKey = body.GetSessionKey()
+}
+
+// writeToBody writes Token data to session.SessionTokenBody.
+func (x Token) writeToBody(body *session.SessionTokenBody) {
+	{ // owner
+		var idv2 *refs.OwnerID
+
+		if x.withOwner {
+			idv2 = body.GetOwnerID()
+			if idv2 == nil {
+				idv2 = new(refs.OwnerID)
+			}
+
+			owner.IDToV2(idv2, x.owner)
+		}
+
+		body.SetOwnerID(idv2)
+	}
+
+	{ // context
+		switch x.ctxType {
+		default:
+			body.SetContext(nil)
+		case ctxContainer:
+			var cctx *session.ContainerSessionContext
+
+			if x.withCtxContainer {
+				var ok bool
+
+				cctx, ok = body.GetContext().(*session.ContainerSessionContext)
+				if !ok {
+					cctx = new(session.ContainerSessionContext)
+				}
+
+				x.ctxContainer.WriteToV2(cctx)
+			}
+
+			body.SetContext(cctx)
+		case ctxObject:
+			var octx *session.ObjectSessionContext
+
+			if x.withCtxObject {
+				var ok bool
+
+				octx, ok = body.GetContext().(*session.ObjectSessionContext)
+				if !ok {
+					octx = new(session.ObjectSessionContext)
+				}
+
+				x.ctxObject.WriteToV2(octx)
+			}
+
+			body.SetContext(octx)
+		}
+	}
+
+	{ // lifetime
+		var lt *session.TokenLifetime
+
+		if x.withLifetime {
+			lt = body.GetLifetime()
+			if lt == nil {
+				lt = new(session.TokenLifetime)
+			}
+
+			var u64 uint64
+
+			x.iat.WriteToUint64(&u64)
+			lt.SetIat(u64)
+
+			x.exp.WriteToUint64(&u64)
+			lt.SetExp(u64)
+
+			x.nbf.WriteToUint64(&u64)
+			lt.SetNbf(u64)
+		}
+
+		body.SetLifetime(lt)
+	}
+
+	body.SetID(x.id)
+	body.SetSessionKey(x.sessionKey)
+}
+
+// writeToV2 writes Token to session.SessionToken message.
+//
+// Message must not be nil.
+func (x Token) WriteToV2(tv2 *session.SessionToken) {
+	{ // body
+		var body *session.SessionTokenBody
+
+		if x.withBody {
+			body = tv2.GetBody()
+			if body == nil {
+				body = new(session.SessionTokenBody)
+			}
+
+			x.writeToBody(body)
+		}
+
+		tv2.SetBody(body)
+	}
+
+	{ // signature
+		var sv2 *refs.Signature
+
+		if x.withSignature {
+			sv2 = &x.signature
+		}
+
+		tv2.SetSignature(sv2)
+	}
+}
+
+func (x *Token) setBodyData(f func(*Token)) {
+	x.withBody = true
+	f(x)
+}
+
+// WithID checks if Token ID was specified.
+func (x Token) WithID() bool {
+	return x.withBody
 }
 
 // ID returns Token identifier.
-func (t *Token) ID() []byte {
-	return (*session.SessionToken)(t).
-		GetBody().
-		GetID()
+//
+// Makes sense only if WithID returns true.
+//
+// Result mutation affects the Token.
+func (x Token) ID() []byte {
+	return x.id
 }
 
-// SetID sets Token identifier.
-func (t *Token) SetID(v []byte) {
-	t.setBodyField(func(body *session.SessionTokenBody) {
-		body.SetID(v)
+// SetID sets Token identifier in a binary format.
+func (x *Token) SetID(id []byte) {
+	x.setBodyData(func(x *Token) {
+		x.id = id
 	})
 }
 
-// OwnerID returns Token's owner identifier.
-func (t *Token) OwnerID() *owner.ID {
-	return owner.NewIDFromV2(
-		(*session.SessionToken)(t).
-			GetBody().
-			GetOwnerID(),
-	)
+// SetTokenUUID sets Token identifier in a uuid.UUID format.
+func SetTokenUUID(t *Token, uid uuid.UUID) {
+	data, err := uid.MarshalBinary()
+	if err != nil {
+		panic(err) // never returns an error, direct [:] isn't compatible
+	}
+
+	t.SetID(data)
+}
+
+// WithOwner checks if owner identifier was specified.
+func (x Token) WithOwner() bool {
+	return x.withOwner
+}
+
+// Owner returns Token's owner identifier.
+//
+// Makes sense only if WithOwner returns true.
+//
+// Result mutation affects the Token.
+func (x Token) Owner() owner.ID {
+	return x.owner
 }
 
 // SetOwnerID sets Token's owner identifier.
-func (t *Token) SetOwnerID(v *owner.ID) {
-	t.setBodyField(func(body *session.SessionTokenBody) {
-		body.SetOwnerID(v.ToV2())
+//
+// Parameter mutation affects the Token.
+func (x *Token) SetOwnerID(id owner.ID) {
+	x.setBodyData(func(x *Token) {
+		x.owner = id
+	})
+
+	x.withOwner = true
+}
+
+// WithSessionKey checks if session key was specified.
+func (x Token) WithSessionKey() bool {
+	return x.withBody
+}
+
+// SessionKey returns public key of the session in a binary format.
+//
+// Makes sense only if WithSessionKey returns true.
+//
+// Result mutation affects the Token.
+func (x Token) SessionKey() []byte {
+	return x.sessionKey
+}
+
+// SetSessionKey sets public key of the session in a binary format.
+//
+// Parameter mutation affects the Token.
+func (x *Token) SetSessionKey(key []byte) {
+	x.setBodyData(func(x *Token) {
+		x.sessionKey = key
 	})
 }
 
-// SessionKey returns public key of the session
-// in a binary format.
-func (t *Token) SessionKey() []byte {
-	return (*session.SessionToken)(t).
-		GetBody().
-		GetSessionKey()
+func (x *Token) setLifetimeData(f func(*Token)) {
+	x.withLifetime = true
+	x.setBodyData(f)
 }
 
-// SetSessionKey sets public key of the session
-// in a binary format.
-func (t *Token) SetSessionKey(v []byte) {
-	t.setBodyField(func(body *session.SessionTokenBody) {
-		body.SetSessionKey(v)
-	})
+// WithLifetime checks if Token lifetime was specified.
+func (x Token) WithLifetime() bool {
+	return x.withBody && x.withLifetime
 }
 
-func (t *Token) setLifetimeField(f func(*session.TokenLifetime)) {
-	t.setBodyField(func(body *session.SessionTokenBody) {
-		lt := body.GetLifetime()
-		if lt == nil {
-			lt = new(session.TokenLifetime)
-			body.SetLifetime(lt)
-		}
-
-		f(lt)
-	})
-}
-
-// Exp returns epoch number of the token expiration.
-func (t *Token) Exp() uint64 {
-	return (*session.SessionToken)(t).
-		GetBody().
-		GetLifetime().
-		GetExp()
+// Exp returns epoch of the Token expiration.
+//
+// Makes sens only if WithLifetime returns true.
+func (x Token) Exp() neofsnetwork.Epoch {
+	return x.exp
 }
 
 // SetExp sets epoch number of the token expiration.
-func (t *Token) SetExp(exp uint64) {
-	t.setLifetimeField(func(lt *session.TokenLifetime) {
-		lt.SetExp(exp)
+func (x *Token) SetExp(exp neofsnetwork.Epoch) {
+	x.setLifetimeData(func(x *Token) {
+		x.exp = exp
 	})
 }
 
-// Nbf returns starting epoch number of the token.
-func (t *Token) Nbf() uint64 {
-	return (*session.SessionToken)(t).
-		GetBody().
-		GetLifetime().
-		GetNbf()
+// Nbf returns starting epoch of the Token.
+//
+// Makes sens only if WithLifetime returns true.
+func (x Token) Nbf() neofsnetwork.Epoch {
+	return x.nbf
 }
 
-// SetNbf sets starting epoch number of the token.
-func (t *Token) SetNbf(nbf uint64) {
-	t.setLifetimeField(func(lt *session.TokenLifetime) {
-		lt.SetNbf(nbf)
+// SetNbf sets starting epoch number of the Token.
+func (x *Token) SetNbf(nbf neofsnetwork.Epoch) {
+	x.setLifetimeData(func(x *Token) {
+		x.nbf = nbf
 	})
 }
 
-// Iat returns starting epoch number of the token.
-func (t *Token) Iat() uint64 {
-	return (*session.SessionToken)(t).
-		GetBody().
-		GetLifetime().
-		GetIat()
+// ReadIat reads starting epoch of the Token.
+//
+// Makes sens only if WithLifetime returns true.
+func (x Token) Iat() neofsnetwork.Epoch {
+	return x.iat
 }
 
-// SetIat sets the number of the epoch in which the token was issued.
-func (t *Token) SetIat(iat uint64) {
-	t.setLifetimeField(func(lt *session.TokenLifetime) {
-		lt.SetIat(iat)
+// SetIat sets the number of the epoch in which the Token was issued.
+func (x *Token) SetIat(iat neofsnetwork.Epoch) {
+	x.setLifetimeData(func(x *Token) {
+		x.iat = iat
 	})
 }
 
 // SignECDSA calculates and writes ECDSA signature of the Token data.
 //
 // Returns signature calculation errors.
-func (t *Token) SignECDSA(key *ecdsa.PrivateKey) error {
-	tV2 := (*session.SessionToken)(t)
+func (x *Token) SignECDSA(key ecdsa.PrivateKey) error {
+	var body *session.SessionTokenBody
 
-	tSig := tV2.GetSignature()
-	if tSig == nil {
-		tSig = new(refs.Signature)
-		tV2.SetSignature(tSig)
+	if x.withBody {
+		body = new(session.SessionTokenBody)
+
+		x.writeToBody(body)
 	}
 
-	var p apicrypto.SignPrm
+	var prm apicrypto.SignPrm
 
-	p.SetProtoMarshaler(v2signature.StableMarshalerCrypto(tV2.GetBody()))
-	p.SetTargetSignature(tSig)
+	prm.SetProtoMarshaler(signature.StableMarshalerCrypto(body))
 
-	return apicrypto.Sign(neofsecdsa.Signer(key), p)
+	prm.SetTargetSignature(&x.signature)
+
+	if err := apicrypto.Sign(neofsecdsa.Signer(key), prm); err != nil {
+		return err
+	}
+
+	x.withSignature = true
+
+	return nil
 }
 
-// VerifySignature checks if token signature is
-// presented and valid.
-func (t *Token) VerifySignature() bool {
-	tV2 := (*session.SessionToken)(t)
+// VerifySignature checks if Token signature is presented and valid.
+//
+// Returns nil if signature is valid.
+func (x *Token) VerifySignature() error {
+	if !x.withSignature {
+		return errors.New("missing signature")
+	}
 
-	sig := tV2.GetSignature()
-
-	key, err := cryptoalgo.UnmarshalKey(cryptoalgo.ECDSA, sig.GetKey())
+	key, err := cryptoalgo.UnmarshalKey(cryptoalgo.ECDSA, x.signature.GetKey())
 	if err != nil {
-		return false
+		return err
 	}
 
-	var p apicrypto.VerifyPrm
+	var body *session.SessionTokenBody
 
-	p.SetProtoMarshaler(v2signature.StableMarshalerCrypto(tV2.GetBody()))
-	p.SetSignature(sig.GetSign())
+	if x.withBody {
+		body = new(session.SessionTokenBody)
 
-	return apicrypto.Verify(key, p)
-}
-
-// Signature returns Token signature.
-func (t *Token) Signature() *pkg.Signature {
-	return pkg.NewSignatureFromV2(
-		(*session.SessionToken)(t).
-			GetSignature(),
-	)
-}
-
-// SetContext sets context of the Token.
-//
-// Supported contexts:
-//  - *ContainerContext.
-//
-// Resets context if it is not supported.
-func (t *Token) SetContext(v interface{}) {
-	var cV2 session.SessionTokenContext
-
-	switch c := v.(type) {
-	case *ContainerContext:
-		cV2 = c.ToV2()
+		x.writeToBody(body)
 	}
 
-	t.setBodyField(func(body *session.SessionTokenBody) {
-		body.SetContext(cV2)
+	var prm apicrypto.VerifyPrm
+
+	prm.SetProtoMarshaler(signature.StableMarshalerCrypto(body))
+
+	prm.SetSignature(x.signature.GetSign())
+
+	if !apicrypto.Verify(key, prm) {
+		return errors.New("invalid signature")
+	}
+
+	return nil
+}
+
+// ForContainer propagates ContainerContext to the Token.
+func (x *Token) ForContainer(ctx ContainerContext) {
+	x.setBodyData(func(x *Token) {
+		x.ctxType = ctxContainer
+		x.ctxContainer = ctx
+		x.withCtxContainer = true
 	})
 }
 
-// Context returns context of the Token.
+// IsForContainer checks if Token's context is ContainerContext.
+func (x Token) IsForContainer() bool {
+	return x.ctxType == ctxContainer
+}
+
+// ContainerContext returns ContainerContext of the Token.
 //
-// Supports same contexts as SetContext.
+// Makes sense only if IsForContainer returns true.
+func (x Token) ContainerContext() ContainerContext {
+	return x.ctxContainer
+}
+
+// ForObject propagates ObjectContext to the Token.
+func (x *Token) ForObject(ctx ObjectContext) {
+	x.setBodyData(func(x *Token) {
+		x.ctxType = ctxObject
+		x.ctxObject = ctx
+		x.withCtxObject = true
+	})
+}
+
+// IsForObject checks if Token's context is ObjectContext.
+func (x Token) IsForObject() bool {
+	return x.ctxType == ctxObject
+}
+
+// ObjectContext returns ObjectContext of the Token.
 //
-// Returns nil if context is not supported.
-func (t *Token) Context() interface{} {
-	switch v := (*session.SessionToken)(t).
-		GetBody().
-		GetContext(); c := v.(type) {
-	default:
-		return nil
-	case *session.ContainerSessionContext:
-		return ContainerContextFromV2(c)
+// Makes sense only if IsForObject returns true.
+func (x Token) ObjectContext() ObjectContext {
+	return x.ctxObject
+}
+
+// TokenMarshalProto marshals Token into a protobuf binary form.
+func TokenMarshalProto(t Token) ([]byte, error) {
+	var sv2 session.SessionToken
+
+	t.WriteToV2(&sv2)
+
+	return sv2.StableMarshal(nil)
+}
+
+// TokenUnmarshalProto unmarshals protobuf binary representation of Token.
+func TokenUnmarshalProto(t *Token, data []byte) error {
+	var sv2 session.SessionToken
+
+	err := sv2.Unmarshal(data)
+	if err == nil {
+		t.FromV2(sv2)
 	}
-}
 
-// GetContainerContext is a helper function that casts
-// Token context to ContainerContext.
-//
-// Returns nil if context is not a ContainerContext.
-func GetContainerContext(t *Token) *ContainerContext {
-	c, _ := t.Context().(*ContainerContext)
-	return c
-}
-
-// Marshal marshals Token into a protobuf binary form.
-//
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (t *Token) Marshal(bs ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(bs) > 0 {
-		buf = bs[0]
-	}
-
-	return (*session.SessionToken)(t).
-		StableMarshal(buf)
-}
-
-// Unmarshal unmarshals protobuf binary representation of Token.
-func (t *Token) Unmarshal(data []byte) error {
-	return (*session.SessionToken)(t).
-		Unmarshal(data)
-}
-
-// MarshalJSON encodes Token to protobuf JSON format.
-func (t *Token) MarshalJSON() ([]byte, error) {
-	return (*session.SessionToken)(t).
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes Token from protobuf JSON format.
-func (t *Token) UnmarshalJSON(data []byte) error {
-	return (*session.SessionToken)(t).
-		UnmarshalJSON(data)
+	return err
 }

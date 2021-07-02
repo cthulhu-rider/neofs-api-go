@@ -1,295 +1,222 @@
 package netmap
 
 import (
-	"fmt"
-	"strconv"
-
 	"github.com/nspcc-dev/neofs-api-go/v2/netmap"
 )
 
-// Filter represents v2-compatible netmap filter.
-type Filter netmap.Filter
+// Filter represents NeoFS API V2-compatible netmap filter.
+type Filter struct {
+	operation Operation
 
-// MainFilterName is a name of the filter
-// which points to the whole netmap.
-const MainFilterName = "*"
+	name string
 
-// applyFilter applies named filter to b.
-func (c *Context) applyFilter(name string, b *Node) bool {
-	return name == MainFilterName || c.match(c.Filters[name], b)
+	key string
+
+	value string
+
+	innerFilters Filters
 }
 
-// processFilters processes filters and returns error is any of them is invalid.
-func (c *Context) processFilters(p *PlacementPolicy) error {
-	for _, f := range p.Filters() {
-		if err := c.processFilter(f, true); err != nil {
-			return err
-		}
-	}
-
-	return nil
+// fromV2 restores Filter from netmap.Filter message.
+func (x *Filter) fromV2(fv2 netmap.Filter) {
+	filtersFromV2(&x.innerFilters, fv2.GetFilters())
+	x.operation.fromV2(fv2.GetOp())
+	x.SetName(fv2.GetName())
+	x.SetKey(fv2.GetKey())
+	x.SetValue(fv2.GetValue())
 }
 
-func (c *Context) processFilter(f *Filter, top bool) error {
-	if f == nil {
-		return fmt.Errorf("%w: FILTER", ErrMissingField)
-	}
-
-	if f.Name() == MainFilterName {
-		return fmt.Errorf("%w: '*' is reserved", ErrInvalidFilterName)
-	}
-
-	if top && f.Name() == "" {
-		return ErrUnnamedTopFilter
-	}
-
-	if !top && f.Name() != "" && c.Filters[f.Name()] == nil {
-		return fmt.Errorf("%w: '%s'", ErrFilterNotFound, f.Name())
-	}
-
-	switch f.Operation() {
-	case OpAND, OpOR:
-		for _, flt := range f.InnerFilters() {
-			if err := c.processFilter(flt, false); err != nil {
-				return err
-			}
-		}
-	default:
-		if len(f.InnerFilters()) != 0 {
-			return ErrNonEmptyFilters
-		} else if !top && f.Name() != "" { // named reference
-			return nil
-		}
-
-		switch f.Operation() {
-		case OpEQ, OpNE:
-		case OpGT, OpGE, OpLT, OpLE:
-			n, err := strconv.ParseUint(f.Value(), 10, 64)
-			if err != nil {
-				return fmt.Errorf("%w: '%s'", ErrInvalidNumber, f.Value())
-			}
-
-			c.numCache[f] = n
-		default:
-			return fmt.Errorf("%w: %s", ErrInvalidFilterOp, f.Operation())
-		}
-	}
-
-	if top {
-		c.Filters[f.Name()] = f
-	}
-
-	return nil
-}
-
-// match matches f against b. It returns no errors because
-// filter should have been parsed during context creation
-// and missing node properties are considered as a regular fail.
-func (c *Context) match(f *Filter, b *Node) bool {
-	switch f.Operation() {
-	case OpAND, OpOR:
-		for _, lf := range f.InnerFilters() {
-			if lf.Name() != "" {
-				lf = c.Filters[lf.Name()]
-			}
-
-			ok := c.match(lf, b)
-			if ok == (f.Operation() == OpOR) {
-				return ok
-			}
-		}
-
-		return f.Operation() == OpAND
-	default:
-		return c.matchKeyValue(f, b)
-	}
-}
-
-func (c *Context) matchKeyValue(f *Filter, b *Node) bool {
-	switch f.Operation() {
-	case OpEQ:
-		return b.Attribute(f.Key()) == f.Value()
-	case OpNE:
-		return b.Attribute(f.Key()) != f.Value()
-	default:
-		var attr uint64
-
-		switch f.Key() {
-		case AttrPrice:
-			attr = b.Price
-		case AttrCapacity:
-			attr = b.Capacity
-		default:
-			var err error
-
-			attr, err = strconv.ParseUint(b.Attribute(f.Key()), 10, 64)
-			if err != nil {
-				// Note: because filters are somewhat independent from nodes attributes,
-				// We don't report an error here, and fail filter instead.
-				return false
-			}
-		}
-
-		switch f.Operation() {
-		case OpGT:
-			return attr > c.numCache[f]
-		case OpGE:
-			return attr >= c.numCache[f]
-		case OpLT:
-			return attr < c.numCache[f]
-		case OpLE:
-			return attr <= c.numCache[f]
-		default:
-			// do nothing and return false
-		}
-	}
-	// will not happen if context was created from f (maybe panic?)
-	return false
-}
-
-// NewFilter creates and returns new Filter instance.
+// writeToV2 writes Filter to netmap.Filter message.
 //
-// Defaults:
-//  - name: "";
-//  - key: "";
-//  - value: "";
-//  - operation: 0;
-//  - filters: nil.
-func NewFilter() *Filter {
-	return NewFilterFromV2(new(netmap.Filter))
-}
+// Message must not be nil.
+func (x Filter) writeToV2(fv2 *netmap.Filter) {
+	{ // inner filters
+		var fsv2 []*netmap.Filter
 
-// NewFilterFromV2 converts v2 Filter to Filter.
-//
-// Nil netmap.Filter converts to nil.
-func NewFilterFromV2(f *netmap.Filter) *Filter {
-	return (*Filter)(f)
-}
+		if ln := x.innerFilters.Len(); ln > 0 {
+			fsv2 = fv2.GetFilters()
 
-// ToV2 converts Filter to v2 Filter.
-//
-// Nil Filter converts to nil.
-func (f *Filter) ToV2() *netmap.Filter {
-	return (*netmap.Filter)(f)
+			if cap(fsv2) < ln {
+				fsv2 = make([]*netmap.Filter, 0, ln)
+			}
+
+			fsv2 = fsv2[:ln]
+
+			filtersToV2(fsv2, x.innerFilters)
+		}
+
+		fv2.SetFilters(fsv2)
+	}
+
+	{ // operation
+		var opv2 netmap.Operation
+
+		x.operation.writeToV2(&opv2)
+
+		fv2.SetOp(opv2)
+	}
+
+	fv2.SetName(x.name)
+	fv2.SetKey(x.key)
+	fv2.SetValue(x.value)
 }
 
 // Key returns key to filter.
-func (f *Filter) Key() string {
-	return (*netmap.Filter)(f).
-		GetKey()
+func (x Filter) Key() string {
+	return x.key
 }
 
 // SetKey sets key to filter.
-func (f *Filter) SetKey(key string) {
-	(*netmap.Filter)(f).
-		SetKey(key)
+func (x *Filter) SetKey(key string) {
+	x.key = key
 }
 
 // Value returns value to match.
-func (f *Filter) Value() string {
-	return (*netmap.Filter)(f).
-		GetValue()
+func (x Filter) Value() string {
+	return x.value
 }
 
 // SetValue sets value to match.
-func (f *Filter) SetValue(val string) {
-	(*netmap.Filter)(f).
-		SetValue(val)
+func (x *Filter) SetValue(val string) {
+	x.value = val
 }
 
 // Name returns filter name.
-func (f *Filter) Name() string {
-	return (*netmap.Filter)(f).
-		GetName()
+func (x Filter) Name() string {
+	return x.name
 }
 
 // SetName sets filter name.
-func (f *Filter) SetName(name string) {
-	(*netmap.Filter)(f).
-		SetName(name)
+func (x *Filter) SetName(name string) {
+	x.name = name
 }
 
 // Operation returns filtering operation.
-func (f *Filter) Operation() Operation {
-	return OperationFromV2(
-		(*netmap.Filter)(f).
-			GetOp(),
-	)
+func (x Filter) Operation() Operation {
+	return x.operation
 }
 
 // SetOperation sets filtering operation.
-func (f *Filter) SetOperation(op Operation) {
-	(*netmap.Filter)(f).
-		SetOp(op.ToV2())
+func (x *Filter) SetOperation(operation Operation) {
+	x.operation = operation
 }
 
-func filtersFromV2(fs []*netmap.Filter) []*Filter {
-	if fs == nil {
-		return nil
+// InnerFilters returns set of the inner filters.
+//
+// Result mutation affects the Filter.
+func (x Filter) InnerFilters() Filters {
+	return x.innerFilters
+}
+
+// SetInnerFilters sets set of the inner filters.
+//
+// Parameter mutation affects the Filter.
+func (x *Filter) SetInnerFilters(innerFilters Filters) {
+	x.innerFilters = innerFilters
+}
+
+// Filters represents set of Filter's.
+type Filters struct {
+	elems []Filter
+}
+
+// Len returns number of elements in the Filters.
+func (x Filters) Len() int {
+	return len(x.elems)
+}
+
+// SetLen sets number of elements in the Filters.
+// Does not modify already existing elements.
+func (x *Filters) SetLen(num int) {
+	if cap(x.elems) < num {
+		x.elems = make([]Filter, 0, num)
 	}
 
-	res := make([]*Filter, 0, len(fs))
-
-	for i := range fs {
-		res = append(res, NewFilterFromV2(fs[i]))
-	}
-
-	return res
+	x.elems = x.elems[:num]
 }
 
-// InnerFilters returns list of inner filters.
-func (f *Filter) InnerFilters() []*Filter {
-	return filtersFromV2(
-		(*netmap.Filter)(f).
-			GetFilters(),
-	)
-}
-
-func filtersToV2(fs []*Filter) (fsV2 []*netmap.Filter) {
-	if fs != nil {
-		fsV2 = make([]*netmap.Filter, 0, len(fs))
-
-		for i := range fs {
-			fsV2 = append(fsV2, fs[i].ToV2())
+// Iterate is a read-only iterator over all elements of the Filters. Passes each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Filters) Iterate(f func(Filter) bool) {
+	for i := range x.elems {
+		if f(x.elems[i]) {
+			return
 		}
 	}
-
-	return
 }
 
-// SetInnerFilters sets list of inner filters.
-func (f *Filter) SetInnerFilters(fs ...*Filter) {
-	(*netmap.Filter)(f).
-		SetFilters(filtersToV2(fs))
+// IterateP is a read-write iterator over all elements of the Filters. Passes pointer to each element to the handler.
+// Breaks iterating on true handler's return.
+func (x Filters) IterateP(f func(*Filter) bool) {
+	for i := range x.elems {
+		if f(&x.elems[i]) {
+			return
+		}
+	}
 }
 
-// Marshal marshals Filter into a protobuf binary form.
+// AppendFilters appends elements to the Filters.
 //
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (f *Filter) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
+// Filters must not be nil.
+func AppendFilters(fs *Filters, elems ...Filter) {
+	lnNew := len(elems)
+	if lnNew == 0 {
+		return
 	}
 
-	return (*netmap.Filter)(f).StableMarshal(buf)
+	lnPrev := fs.Len()
+
+	fs.SetLen(lnPrev + lnNew)
+
+	var indFull, indPos int
+
+	fs.IterateP(func(f *Filter) bool {
+		if indFull < lnPrev {
+			indFull++
+			return false
+		}
+
+		*f = elems[indPos]
+
+		indPos++
+
+		return false
+	})
 }
 
-// Unmarshal unmarshals protobuf binary representation of Filter.
-func (f *Filter) Unmarshal(data []byte) error {
-	return (*netmap.Filter)(f).
-		Unmarshal(data)
+// filtersFromV2 restores Filters from netmap.Filter slice.
+//
+// All slice elements must not be nil.
+func filtersFromV2(fs *Filters, fsv2 []*netmap.Filter) {
+	ln := len(fsv2)
+	fs.SetLen(ln)
+
+	ind := 0
+
+	fs.IterateP(func(f *Filter) bool {
+		f.fromV2(*fsv2[ind])
+
+		ind++
+
+		return false
+	})
 }
 
-// MarshalJSON encodes Filter to protobuf JSON format.
-func (f *Filter) MarshalJSON() ([]byte, error) {
-	return (*netmap.Filter)(f).
-		MarshalJSON()
-}
+// filtersToV2 writes Filters to netmap.Filter slice.
+//
+// Slice length must be at least Len(). Items can be nil.
+func filtersToV2(fsv2 []*netmap.Filter, fs Filters) {
+	ind := 0
 
-// UnmarshalJSON decodes Filter from protobuf JSON format.
-func (f *Filter) UnmarshalJSON(data []byte) error {
-	return (*netmap.Filter)(f).
-		UnmarshalJSON(data)
+	fs.Iterate(func(f Filter) bool {
+		if fsv2[ind] == nil {
+			fsv2[ind] = new(netmap.Filter)
+		}
+
+		f.writeToV2(fsv2[ind])
+
+		ind++
+
+		return false
+	})
 }

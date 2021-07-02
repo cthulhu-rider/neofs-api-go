@@ -4,82 +4,41 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/v2/object"
 )
 
-// Attribute represents v2-compatible object attribute.
-type Attribute object.Attribute
+// Attribute represents NeoFS object attribute.
+type Attribute struct {
+	key, val string
+}
 
-// NewAttributeFromV2 wraps v2 Attribute message to Attribute.
+// Key returns key to Attribute.
+func (x Attribute) Key() string {
+	return x.key
+}
+
+// SetKey sets key to Attribute.
+func (x *Attribute) SetKey(v string) {
+	x.key = v
+}
+
+// Value returns value of Attribute.
+func (x Attribute) Value() string {
+	return x.val
+}
+
+// SetValue sets value of Attribute.
+func (x *Attribute) SetValue(v string) {
+	x.val = v
+}
+
+// AttributeFromV2 restores Attribute from object.Attribute message.
+func AttributeFromV2(a *Attribute, av2 object.Attribute) {
+	a.SetKey(av2.GetKey())
+	a.SetValue(av2.GetValue())
+}
+
+// AttributeToV2 writes Attribute to object.Attribute message.
 //
-// Nil object.Attribute converts to nil.
-func NewAttributeFromV2(aV2 *object.Attribute) *Attribute {
-	return (*Attribute)(aV2)
-}
-
-// NewAttribute creates and initializes blank Attribute.
-//
-// Works similar as NewAttributeFromV2(new(Attribute)).
-//
-// Defaults:
-// 	- key: "";
-// 	- value: "".
-func NewAttribute() *Attribute {
-	return NewAttributeFromV2(new(object.Attribute))
-}
-
-// Key returns key to the object attribute.
-func (a *Attribute) Key() string {
-	return (*object.Attribute)(a).GetKey()
-}
-
-// SetKey sets key to the object attribute.
-func (a *Attribute) SetKey(v string) {
-	(*object.Attribute)(a).SetKey(v)
-}
-
-// Value return value of the object attribute.
-func (a *Attribute) Value() string {
-	return (*object.Attribute)(a).GetValue()
-}
-
-// SetValue sets value of the object attribute.
-func (a *Attribute) SetValue(v string) {
-	(*object.Attribute)(a).SetValue(v)
-}
-
-// ToV2 converts Attribute to v2 Attribute message.
-//
-// Nil Attribute converts to nil.
-func (a *Attribute) ToV2() *object.Attribute {
-	return (*object.Attribute)(a)
-}
-
-// Marshal marshals Attribute into a protobuf binary form.
-//
-// Buffer is allocated when the argument is empty.
-// Otherwise, the first buffer is used.
-func (a *Attribute) Marshal(b ...[]byte) ([]byte, error) {
-	var buf []byte
-	if len(b) > 0 {
-		buf = b[0]
-	}
-
-	return (*object.Attribute)(a).
-		StableMarshal(buf)
-}
-
-// Unmarshal unmarshals protobuf binary representation of Attribute.
-func (a *Attribute) Unmarshal(data []byte) error {
-	return (*object.Attribute)(a).
-		Unmarshal(data)
-}
-
-// MarshalJSON encodes Attribute to protobuf JSON format.
-func (a *Attribute) MarshalJSON() ([]byte, error) {
-	return (*object.Attribute)(a).
-		MarshalJSON()
-}
-
-// UnmarshalJSON decodes Attribute from protobuf JSON format.
-func (a *Attribute) UnmarshalJSON(data []byte) error {
-	return (*object.Attribute)(a).
-		UnmarshalJSON(data)
+// Message must not be nil.
+func AttributeToV2(av2 *object.Attribute, a Attribute) {
+	av2.SetKey(a.Key())
+	av2.SetValue(a.Value())
 }

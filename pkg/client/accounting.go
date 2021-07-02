@@ -7,8 +7,8 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/pkg/accounting"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
 	v2accounting "github.com/nspcc-dev/neofs-api-go/v2/accounting"
+	"github.com/nspcc-dev/neofs-api-go/v2/refs"
 	rpcapi "github.com/nspcc-dev/neofs-api-go/v2/rpc"
-	v2session "github.com/nspcc-dev/neofs-api-go/v2/session"
 )
 
 // AccountBalancePrm groups the parameters of Client.AccountBalance operation.
@@ -27,76 +27,87 @@ type AccountBalanceRes struct {
 // AccountBalance requests the current balance of the NeoFS account.
 //
 // All required parameters must be set. Result must not be nil.
+//
+// Context is used for network communication. To set the timeout, use context.WithTimeout or context.WithDeadline.
+// It must not be nil.
 func (x Client) AccountBalance(ctx context.Context, prm AccountBalancePrm, res *AccountBalanceRes) error {
 	// prelim checks
-	prm.check()
+	prm.checkInputs(ctx, res)
 
-	if res == nil {
-		panic("nil result argument")
-	}
-
-	// construct the request body
 	var reqBody v2accounting.BalanceRequestBody
 
-	reqBody.SetOwnerID(prm.owner.ToV2())
+	{ // construct the request body
+		{ // account ID
+			var idv2 refs.OwnerID
 
-	// construct the request meta header
-	var hMeta v2session.RequestMetaHeader
+			owner.IDToV2(&idv2, prm.owner)
 
-	prm.writeToRequestMetaHeader(&hMeta)
+			reqBody.SetOwnerID(&idv2)
+		}
+	}
 
-	// construct the request
 	var (
 		err error
 		req v2accounting.BalanceRequest
 	)
 
-	if err = prm.prepareRequest(&req, func(r requestInterface) {
-		r.(*v2accounting.BalanceRequest).SetBody(&reqBody)
-	}); err != nil {
-		return err
+	{ // construct the request
+		if err = prepareRequest(&req, prm, func(r requestInterface) {
+			r.(*v2accounting.BalanceRequest).SetBody(&reqBody)
+		}); err != nil {
+			return err
+		}
 	}
-
-	// exec RPC
-	var rpcPrm rpcapi.BalancePrm
-
-	rpcPrm.SetRequest(req)
 
 	var rpcRes rpcapi.BalanceRes
 
-	err = rpcapi.Balance(ctx, x.c, rpcPrm, &rpcRes)
-	if err != nil {
-		return fmt.Errorf("rpc error: %w", err)
+	{ // exec RPC
+		var rpcPrm rpcapi.BalancePrm
+
+		rpcPrm.SetRequest(req)
+
+		err = rpcapi.Balance(ctx, x.c, rpcPrm, &rpcRes)
+		if err != nil {
+			return fmt.Errorf("rpc error: %w", err)
+		}
 	}
 
-	// verify the response
-	resp := rpcRes.Response()
+	var (
+		resp = rpcRes.Response()
+		body *v2accounting.BalanceResponseBody
+		bal  *v2accounting.Decimal
+	)
 
-	body := resp.GetBody()
-	if body == nil {
-		return errMalformedResponse
+	{ // verify the response
+		if body = resp.GetBody(); body == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
+		}
+
+		if bal = body.GetBalance(); bal == nil {
+			// some sort of selfishness because NeoFS API does not tell "MUST NOT be null" and perhaps it would be worth
+			return errMalformedResponse
+		}
+
+		if err = verifyResponseSignature(&resp); err != nil {
+			return err
+		}
 	}
 
-	bal := body.GetBalance()
-	if bal == nil {
-		return errMalformedResponse
+	{ // set results
+		accounting.DecimalFromV2(&res.fundNum, *bal)
 	}
-
-	if err = verifyResponseSignature(&resp); err != nil {
-		return err
-	}
-
-	// set results
-	res.fundNum.FromV2(*bal)
 
 	return nil
 }
 
-// check checks if all required parameters are set and panics if not.
-func (x AccountBalancePrm) check() {
-	x.commonPrm.check()
+// checkInputs checks if all inputs are correctly set and panics if not.
+func (x AccountBalancePrm) checkInputs(ctx context.Context, res *AccountBalanceRes) {
+	x.commonPrm.checkInputs(ctx)
 
 	switch {
+	case res == nil:
+		panic("nil result")
 	case !x.ownerSet:
 		panic("account ID is required")
 	}

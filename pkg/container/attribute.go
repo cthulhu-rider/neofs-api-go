@@ -4,73 +4,41 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/v2/container"
 )
 
-type (
-	Attribute  container.Attribute
-	Attributes []*Attribute
-)
+// Attribute represents NeoFS container attribute.
+type Attribute struct {
+	key, val string
+}
 
-// NewAttribute creates and initializes blank Attribute.
+// Key returns key to Attribute.
+func (x Attribute) Key() string {
+	return x.key
+}
+
+// SetKey sets key to Attribute.
+func (x *Attribute) SetKey(v string) {
+	x.key = v
+}
+
+// Value returns value of Attribute.
+func (x Attribute) Value() string {
+	return x.val
+}
+
+// SetValue sets value of Attribute.
+func (x *Attribute) SetValue(v string) {
+	x.val = v
+}
+
+// AttributeFromV2 restores Attribute from container.Attribute message.
+func AttributeFromV2(a *Attribute, av2 container.Attribute) {
+	a.SetKey(av2.GetKey())
+	a.SetValue(av2.GetValue())
+}
+
+// AttributeToV2 writes Attribute to container.Attribute message.
 //
-// Defaults:
-//  - key: "";
-//  - value: "".
-func NewAttribute() *Attribute {
-	return NewAttributeFromV2(new(container.Attribute))
-}
-
-func (a *Attribute) SetKey(v string) {
-	(*container.Attribute)(a).SetKey(v)
-}
-
-func (a *Attribute) SetValue(v string) {
-	(*container.Attribute)(a).SetValue(v)
-}
-
-func (a *Attribute) Key() string {
-	return (*container.Attribute)(a).GetKey()
-}
-
-func (a *Attribute) Value() string {
-	return (*container.Attribute)(a).GetValue()
-}
-
-// NewAttributeFromV2 wraps protocol dependent version of
-// Attribute message.
-//
-// Nil container.Attribute converts to nil.
-func NewAttributeFromV2(v *container.Attribute) *Attribute {
-	return (*Attribute)(v)
-}
-
-// ToV2 converts Attribute to v2 Attribute message.
-//
-// Nil Attribute converts to nil.
-func (a *Attribute) ToV2() *container.Attribute {
-	return (*container.Attribute)(a)
-}
-
-func NewAttributesFromV2(v []*container.Attribute) Attributes {
-	if v == nil {
-		return nil
-	}
-
-	attrs := make(Attributes, 0, len(v))
-	for i := range v {
-		attrs = append(attrs, NewAttributeFromV2(v[i]))
-	}
-
-	return attrs
-}
-
-func (a Attributes) ToV2() []*container.Attribute {
-	if a == nil {
-		return nil
-	}
-
-	attrs := make([]*container.Attribute, 0, len(a))
-	for i := range a {
-		attrs = append(attrs, a[i].ToV2())
-	}
-
-	return attrs
+// Message must not be nil.
+func AttributeToV2(av2 *container.Attribute, a Attribute) {
+	av2.SetKey(a.Key())
+	av2.SetValue(a.Value())
 }
